@@ -1,7 +1,11 @@
 # 行业情报系统（桌面版）
 
 基于 **Python 3.10+**、**PySide6**、**SQLite** 与 **DeepSeek API** 的个人行业情报桌面应用：手动/定时分析、本地存储、邮件推送（SMTP）。
+## 下载安装
 
+[![下载安装程序](https://img.shields.io/badge/下载-行业情报系统_Setup_v1.0.exe-blue?style=for-the-badge)](https://github.com/PretendMask/AI-Industry-Intelligence-System/releases/download/v1.0.0/%E8%A1%8C%E4%B8%9A%E6%83%85%E6%8A%A5%E7%B3%BB%E7%BB%9F_Setup_v1.0.exe)
+
+**推荐方式**：直接下载安装程序，一键安装使用。
 ## 📸 界面预览
 
 ### 仪表盘
