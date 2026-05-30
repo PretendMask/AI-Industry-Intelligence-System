@@ -78,6 +78,12 @@ python main.py
 - 网络请求、AI 调用、数据库批量读写、导出、邮件发送等均在 **QThread + QObject Worker** 中执行，避免阻塞 UI。
 - 定时任务使用 **APScheduler** 的 `BackgroundScheduler`，在 **独立 QThread** 中启停（见 `core/scheduler.py`）。
 
+## 规划（Roadmap）
+
+- 升级为协同架构（定向抓取国家发改委、国家能源局、财联社、同花顺等官方及财经新闻等更多权威渠道）
+- DeepSeek API只用于内容解析，不做数据获取，对候选股票池进行新闻情绪打分、多因子综合推理，输出结构化 JSON + 中文诊断报告
+- 对个股进行情绪分析与综合诊断
+- 增强政策解读深度与影响分析
 
 
 
