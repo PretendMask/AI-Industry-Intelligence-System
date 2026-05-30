@@ -2,6 +2,20 @@
 
 基于 **Python 3.10+**、**PySide6**、**SQLite** 与 **DeepSeek API** 的个人行业情报桌面应用：手动/定时分析、本地存储、邮件推送（SMTP）。
 
+## 📸 界面预览
+
+### 仪表盘
+![仪表盘](screenshots/1-dashboard.png)
+
+### 统计分析
+![统计分析](screenshots/1-statistics.png)
+
+### 设置页面
+![分类统计](screenshots/1-settings.png)
+
+### 定时邮件通知
+![邮件通知](screenshots/1-email.png)
+
 ## 环境要求
 
 - Python 3.10 或更高版本
