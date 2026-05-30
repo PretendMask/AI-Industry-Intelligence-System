@@ -2,6 +2,20 @@
 
 基于 **Python 3.10+**、**PySide6**、**SQLite** 与 **DeepSeek API** 的个人行业情报桌面应用：手动/定时分析、本地存储、邮件推送（SMTP）。
 
+## 📸 界面预览
+
+### 仪表盘
+![仪表盘](screenshots/1-dashboard.png)
+
+### 统计分析
+![统计分析](screenshots/1-statistics.png)
+
+### 设置页面
+![分类统计](screenshots/1-settings.png)
+
+### 定时邮件通知
+![邮件通知](screenshots/1-email.png)
+
 ## 环境要求
 
 - Python 3.10 或更高版本
@@ -31,7 +45,7 @@ pip install -r requirements.txt
 
 ## 配置
 
-1. 首次运行会在 `config/config.json` 写入配置（若不存在则从默认加载）。**请勿将真实密钥提交到 Git**（仓库已忽略 `config/config.json`）。
+1. 首次运行会在 `config/config.json` 写入配置（若不存在则从默认加载）。（仓库已忽略 `config/config.json`）。
 2. API Key 与 SMTP 密码在磁盘上以 **Fernet** 对称加密存储，密钥文件位于 `data/.fernet_key`（已加入 `.gitignore`）。
 3. 可选：复制 `.env.example` 为 `.env`，设置 `AI_INTELLIGENCE_LOG_LEVEL` 等（见 `config/settings.py` 中的 `env_prefix`）。
 
@@ -57,17 +71,8 @@ python main.py
 
 - 网络请求、AI 调用、数据库批量读写、导出、邮件发送等均在 **QThread + QObject Worker** 中执行，避免阻塞 UI。
 - 定时任务使用 **APScheduler** 的 `BackgroundScheduler`，在 **独立 QThread** 中启停（见 `core/scheduler.py`）。
-- 后续可将 `ui/` 中布局改为 Qt Designer `.ui` + `pyside6-uic` 生成代码，与当前手写 `ui_*.py` 方式并存。
 
-## 打包（可选）
 
-安装 PyInstaller 后可根据 `pyinstaller.spec` 构建可执行文件（需按本机路径微调）：
 
-```bash
-pip install pyinstaller
-pyinstaller pyinstaller.spec
-```
 
-## 许可证
 
-按项目需要自行补充。
