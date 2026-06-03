@@ -64,14 +64,16 @@ class SchedulerService(QObject):
             now = datetime.now()
             current_hm = now.strftime("%H:%M")
             current_day = now.strftime("%Y-%m-%d")
+            current_week_key = now.strftime("%Y-W%W")
             slots = {
                 "morning": settings.scheduler_morning,
                 "noon": settings.scheduler_noon,
                 "evening": settings.scheduler_evening,
             }
             for name, slot in slots.items():
-                if self._is_due(name, slot, current_hm, current_day):
-                    self._last_run[name] = current_day
+                if self._is_due(name, slot, current_hm, current_day, current_week_key, now.weekday()):
+                    run_key = current_week_key if slot.frequency == "weekly" else current_day
+                    self._last_run[name] = run_key
                     logger.info("定时任务触发：{} {}", name, current_hm)
                     self.tick.emit(f"scheduler_job_due:{name}@{current_hm}")
                     self.job_due.emit(name)
@@ -79,18 +81,32 @@ class SchedulerService(QObject):
             logger.exception("调度检查异常: {}", exc)
             self.job_failed.emit(str(exc))
 
-    def _is_due(self, name: str, slot: SchedulerSlot, current_hm: str, current_day: str) -> bool:
+    def _is_due(
+        self,
+        name: str,
+        slot: SchedulerSlot,
+        current_hm: str,
+        current_day: str,
+        current_week_key: str,
+        current_weekday: int,
+    ) -> bool:
         if not slot.enabled:
             return False
         if slot.time.strip() != current_hm:
             return False
+        if slot.frequency == "weekly":
+            if int(slot.weekday) != current_weekday:
+                return False
+            return self._last_run.get(name) != current_week_key
         return self._last_run.get(name) != current_day
 
     def _describe_schedule(self) -> str:
         if self._settings is None:
             return "未配置"
+        week_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
         return ", ".join(
             f"{name}={'开启' if slot.enabled else '关闭'}@{slot.time}"
+            f"/{'每天' if slot.frequency == 'daily' else week_names[int(slot.weekday) % 7]}"
             for name, slot in {
                 "morning": self._settings.scheduler_morning,
                 "noon": self._settings.scheduler_noon,

@@ -36,7 +36,7 @@ def main() -> None:
     _set_windows_app_user_model_id()
 
     app = QApplication(sys.argv)
-    app.setApplicationName("AI行业情报系统")
+    app.setApplicationName("行业情报系统")
     app.setStyle("Fusion")
 
     icon = _load_app_icon()

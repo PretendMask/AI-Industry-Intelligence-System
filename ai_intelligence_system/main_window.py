@@ -8,14 +8,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from loguru import logger
-from PySide6.QtCore import QMetaObject, QObject, Qt, QThread, Signal, Slot
-from PySide6.QtGui import QAction, QCloseEvent, QColor, QIcon, QPainter, QPalette, QPen
+from PySide6.QtCore import QDate, QMetaObject, QObject, QSize, Qt, QThread, Signal, Slot
+from PySide6.QtGui import QAction, QCloseEvent, QColor, QFont, QIcon, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDateEdit,
     QFileDialog,
     QFormLayout,
+    QGraphicsDropShadowEffect,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -33,24 +35,35 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStatusBar,
+    QStyle,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTextBrowser,
     QTextEdit,
     QToolBar,
     QVBoxLayout,
     QWidget,
 )
 
+from sqlalchemy import delete
+
 from ai_intelligence_system.config.settings import AppSettings, SchedulerSlot, load_settings
+from ai_intelligence_system.core import database as db
 from ai_intelligence_system.core.scheduler import SchedulerService
+from ai_intelligence_system.models.intelligence_record import NewsRecord
 from ai_intelligence_system.ui import theme
+from ai_intelligence_system.ui.news_table_widget import NewsTableWidget
+from ai_intelligence_system.ui.styles import modern_light_qss
 from ai_intelligence_system.utils.paths import app_icon_path, describe_local_storage
 from ai_intelligence_system.workers.ai_analysis_worker import (
     AiAnalysisWorker,
+    CrawlPipelineWorker,
     DashboardLoadWorker,
     EmailSendWorker,
     ExportCsvWorker,
+    NewsLoadWorker,
+    RecentNewsAnalysisWorker,
     SettingsSaveWorker,
 )
 
@@ -155,6 +168,81 @@ class LogBus(QObject):
     message = Signal(str)
 
 
+class NewsDeleteWorker(QObject):
+    """后台删除新闻，避免 SQLite 操作阻塞 UI。"""
+
+    finished_ok = Signal(int)
+    failed = Signal(str)
+
+    def __init__(self, database_path: str, news_id: int) -> None:
+        super().__init__()
+        self._database_path = database_path
+        self._news_id = news_id
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            engine = db.create_engine_for_path(self._database_path)
+            db.init_db(engine)
+            factory = db.make_session_factory(engine)
+            with db.session_scope(factory) as session:
+                record = session.get(NewsRecord, self._news_id)
+                if record is None:
+                    raise ValueError("新闻记录不存在，可能已被删除。")
+                session.delete(record)
+            self.finished_ok.emit(self._news_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("删除新闻失败")
+            self.failed.emit(str(exc))
+
+
+class NewsBulkDeleteWorker(QObject):
+    """后台批量删除新闻，支持按当前列表 ID 或发布时间范围删除。"""
+
+    finished_ok = Signal(int)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        database_path: str,
+        *,
+        news_ids: list[int] | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        source: str | None = None,
+    ) -> None:
+        super().__init__()
+        self._database_path = database_path
+        self._news_ids = news_ids or []
+        self._start_at = start_at
+        self._end_at = end_at
+        self._source = source
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            engine = db.create_engine_for_path(self._database_path)
+            db.init_db(engine)
+            factory = db.make_session_factory(engine)
+            with db.session_scope(factory) as session:
+                if self._news_ids:
+                    stmt = delete(NewsRecord).where(NewsRecord.id.in_(self._news_ids))
+                else:
+                    stmt = delete(NewsRecord)
+                    if self._start_at is not None:
+                        stmt = stmt.where(NewsRecord.publish_time >= self._start_at)
+                    if self._end_at is not None:
+                        stmt = stmt.where(NewsRecord.publish_time < self._end_at)
+                    if self._source and self._source != "全部":
+                        stmt = stmt.where(NewsRecord.source == self._source)
+                result = session.execute(stmt)
+                deleted = int(result.rowcount or 0)
+            self.finished_ok.emit(deleted)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("批量删除新闻失败")
+            self.failed.emit(str(exc))
+
+
 class MainWindow(QMainWindow):
     configure_scheduler_requested = Signal(object)
 
@@ -177,6 +265,11 @@ class MainWindow(QMainWindow):
         self._settings: AppSettings = load_settings()
         self._is_dark = False
         self._cached_rows: list[dict] = []
+        self._cached_news_rows: list[dict] = []
+        self._crawl_step_status: dict[str, str] = {}
+        self._auto_ai_after_crawl = False
+        self._auto_mail_after_ai = False
+        self._last_ai_result: dict | None = None
         # 防止 Worker 在槽连接前被 Python GC 回收（否则点击按钮无任何反应）
         self._active_background_jobs: list[tuple[QThread, QObject]] = []
 
@@ -213,6 +306,23 @@ class MainWindow(QMainWindow):
 
         logger.info("主窗口已打开")
 
+    def _std_icon(self, pixmap: QStyle.StandardPixmap) -> QIcon:
+        return self.style().standardIcon(pixmap)
+
+    def _configure_form_layout(self, form: QFormLayout) -> None:
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(14)
+        form.setContentsMargins(12, 10, 12, 12)
+        form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+
+    def _apply_card_shadow(self, widget: QWidget) -> None:
+        shadow = QGraphicsDropShadowEffect(widget)
+        shadow.setBlurRadius(24)
+        shadow.setOffset(0, 8)
+        shadow.setColor(QColor(15, 23, 42, 24))
+        widget.setGraphicsEffect(shadow)
+
     def _configure_scheduler(self) -> None:
         self.configure_scheduler_requested.emit(self._settings)
 
@@ -231,35 +341,35 @@ class MainWindow(QMainWindow):
 
     # --- UI 构建 ---
     def _build_actions(self) -> None:
-        self._act_quit = QAction("退出", self)
+        self._act_quit = QAction(self._std_icon(QStyle.SP_DialogCloseButton), "退出", self)
         self._act_quit.triggered.connect(self.close)
-        self._act_settings = QAction("设置…", self)
+        self._act_settings = QAction(self._std_icon(QStyle.SP_FileDialogDetailedView), "设置…", self)
         self._act_settings.triggered.connect(lambda: self._tabs.setCurrentIndex(3))
-        self._act_export = QAction("导出 CSV…", self)
+        self._act_export = QAction(self._std_icon(QStyle.SP_DialogSaveButton), "导出 CSV…", self)
         self._act_export.triggered.connect(self._export_csv_dialog)
-        self._act_refresh = QAction("立即刷新数据", self)
+        self._act_refresh = QAction(self._std_icon(QStyle.SP_BrowserReload), "立即刷新数据", self)
         self._act_refresh.triggered.connect(self.refresh_records_async)
-        self._act_mail = QAction("发送测试邮件", self)
+        self._act_mail = QAction(self._std_icon(QStyle.SP_MessageBoxInformation), "发送测试邮件", self)
         self._act_mail.triggered.connect(self._send_test_mail_async)
-        self._act_history = QAction("统计分析", self)
+        self._act_history = QAction(self._std_icon(QStyle.SP_FileDialogInfoView), "统计分析", self)
         self._act_history.triggered.connect(lambda: self._tabs.setCurrentIndex(1))
-        self._act_log_tab = QAction("日志", self)
+        self._act_log_tab = QAction(self._std_icon(QStyle.SP_FileDialogContentsView), "日志", self)
         self._act_log_tab.triggered.connect(lambda: self._tabs.setCurrentIndex(4))
-        self._act_about = QAction("关于", self)
+        self._act_about = QAction(self._std_icon(QStyle.SP_MessageBoxQuestion), "关于", self)
         self._act_about.triggered.connect(self._show_about)
-        self._act_theme = QAction("切换深/浅色", self)
+        self._act_theme = QAction(self._std_icon(QStyle.SP_DesktopIcon), "切换深/浅色", self)
         self._act_theme.triggered.connect(self._toggle_theme)
 
     def _build_menu_toolbar(self) -> None:
         menu_file = self.menuBar().addMenu("文件")
         menu_file.addAction(self._act_settings)
-        menu_file.addAction(self._act_export)
         menu_file.addSeparator()
         menu_file.addAction(self._act_quit)
 
         menu_ops = self.menuBar().addMenu("操作")
         menu_ops.addAction(self._act_refresh)
         menu_ops.addAction(self._act_mail)
+        menu_ops.addAction(self._act_export)
 
         menu_view = self.menuBar().addMenu("查看")
         menu_view.addAction(self._act_history)
@@ -270,12 +380,6 @@ class MainWindow(QMainWindow):
         menu_help = self.menuBar().addMenu("帮助")
         menu_help.addAction(self._act_about)
 
-        tb = QToolBar("主工具栏")
-        tb.setMovable(False)
-        self.addToolBar(tb)
-        tb.addAction(self._act_refresh)
-        tb.addAction(self._act_mail)
-        tb.addAction(self._act_export)
 
     def _build_tabs(self) -> None:
         self._tabs = QTabWidget()
@@ -287,11 +391,11 @@ class MainWindow(QMainWindow):
         self._tab_settings = QWidget()
         self._tab_log = QWidget()
 
-        self._tabs.addTab(self._tab_dashboard, "仪表盘")
-        self._tabs.addTab(self._tab_browse, "统计分析")
-        self._tabs.addTab(self._tab_manual, "手动分析")
-        self._tabs.addTab(self._tab_settings, "设置")
-        self._tabs.addTab(self._tab_log, "日志与状态")
+        self._tabs.addTab(self._tab_dashboard, self._std_icon(QStyle.SP_ComputerIcon), "仪表盘")
+        self._tabs.addTab(self._tab_browse, self._std_icon(QStyle.SP_FileDialogInfoView), "统计分析")
+        self._tabs.addTab(self._tab_manual, self._std_icon(QStyle.SP_BrowserReload), "手动分析")
+        self._tabs.addTab(self._tab_settings, self._std_icon(QStyle.SP_FileDialogDetailedView), "设置")
+        self._tabs.addTab(self._tab_log, self._std_icon(QStyle.SP_FileDialogContentsView), "日志与状态")
 
         self._setup_tab_dashboard()
         self._setup_tab_browse()
@@ -305,6 +409,7 @@ class MainWindow(QMainWindow):
         header_row = QHBoxLayout()
         self._dash_hint = QLabel("最近情报（自动从数据库加载）")
         self._btn_dash_refresh = QPushButton("刷新")
+        self._btn_dash_refresh.setIcon(self._std_icon(QStyle.SP_BrowserReload))
         self._btn_dash_refresh.clicked.connect(self.refresh_records_async)
         header_row.addWidget(self._dash_hint)
         header_row.addStretch()
@@ -378,6 +483,7 @@ class MainWindow(QMainWindow):
         self._analytics_keyword = QLineEdit()
         self._analytics_keyword.setPlaceholderText("按标题、摘要、标签、来源筛选")
         self._btn_analytics_refresh = QPushButton("刷新分析")
+        self._btn_analytics_refresh.setIcon(self._std_icon(QStyle.SP_BrowserReload))
         self._btn_analytics_refresh.clicked.connect(self._update_analytics_view)
         for widget in (
             self._analytics_range,
@@ -511,45 +617,198 @@ class MainWindow(QMainWindow):
 
     def _setup_tab_manual(self) -> None:
         layout = QVBoxLayout(self._tab_manual)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        content = QWidget()
+        content.setMinimumWidth(1120)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(18, 18, 18, 18)
+        content_layout.setSpacing(16)
+
+        main_splitter = QSplitter(Qt.Vertical)
+        main_splitter.setChildrenCollapsible(False)
+        top_splitter = QSplitter(Qt.Horizontal)
+        top_splitter.setChildrenCollapsible(False)
+
+        crawl_group = QGroupBox("爬取流程日志")
+        crawl_group.setObjectName("PanelCard")
+        self._apply_card_shadow(crawl_group)
+        crawl_layout = QVBoxLayout(crawl_group)
+        crawl_layout.setContentsMargins(16, 18, 16, 16)
+        crawl_layout.setSpacing(12)
+        crawl_ctrl = QHBoxLayout()
+        self._crawl_days = QSpinBox()
+        self._crawl_days.setRange(1, 30)
+        self._crawl_days.setValue(3)
+        self._chk_auto_ai_after_crawl = QCheckBox("爬取完成后自动 AI 分析")
+        self._chk_auto_mail_after_ai = QCheckBox("AI 分析完成后发送邮件")
+        self._btn_start_crawl = QPushButton("开始爬取")
+        self._btn_start_crawl.setIcon(self._std_icon(QStyle.SP_BrowserReload))
+        self._btn_start_crawl.clicked.connect(self._run_crawl_pipeline_async)
+        crawl_ctrl.addWidget(QLabel("最近N天"))
+        crawl_ctrl.addWidget(self._crawl_days)
+        crawl_ctrl.addWidget(self._chk_auto_ai_after_crawl)
+        crawl_ctrl.addWidget(self._chk_auto_mail_after_ai)
+        crawl_ctrl.addStretch()
+        crawl_ctrl.addWidget(self._btn_start_crawl)
+        crawl_layout.addLayout(crawl_ctrl)
+        self._crawl_status_label = QLabel("等待开始爬取")
+        self._crawl_status_label.setObjectName("StatusPill")
+        self._crawl_status_label.setMinimumHeight(34)
+        crawl_layout.addWidget(self._crawl_status_label)
+        self._crawl_log_view = QTextBrowser()
+        self._crawl_log_view.setOpenExternalLinks(True)
+        self._crawl_log_view.setMinimumHeight(220)
+        self._crawl_log_view.setPlaceholderText("爬取日志将在这里实时滚动显示，包括网站 URL、文章标题、状态与异常。")
+        crawl_layout.addWidget(self._crawl_log_view, stretch=1)
+        self._reset_crawl_steps()
+
+        news_group = QGroupBox("新闻数据展示")
+        news_group.setObjectName("PanelCard")
+        self._apply_card_shadow(news_group)
+        news_layout = QVBoxLayout(news_group)
+        news_layout.setContentsMargins(16, 18, 16, 16)
+        news_layout.setSpacing(12)
+        news_filter = QHBoxLayout()
+        self._news_source_filter = QComboBox()
+        self._news_source_filter.addItem("全部")
+        self._news_days_filter = QSpinBox()
+        self._news_days_filter.setRange(1, 365)
+        self._news_days_filter.setValue(7)
+        self._btn_news_refresh = QPushButton("刷新新闻")
+        self._btn_news_refresh.setIcon(self._std_icon(QStyle.SP_BrowserReload))
+        self._btn_news_refresh.clicked.connect(self.refresh_news_async)
+        self._news_source_filter.currentIndexChanged.connect(lambda _idx: self.refresh_news_async())
+        self._news_days_filter.valueChanged.connect(lambda _value: self.refresh_news_async())
+        news_filter.addWidget(QLabel("网站"))
+        news_filter.addWidget(self._news_source_filter)
+        news_filter.addWidget(QLabel("最近N天"))
+        news_filter.addWidget(self._news_days_filter)
+        news_filter.addStretch()
+        news_filter.addWidget(self._btn_news_refresh)
+        news_layout.addLayout(news_filter)
+
+        news_delete_row = QHBoxLayout()
+        news_delete_row.setSpacing(8)
+        self._btn_news_delete_loaded = QPushButton("删除当前全部")
+        self._btn_news_delete_loaded.setObjectName("DangerButton")
+        self._btn_news_delete_loaded.setIcon(self._std_icon(QStyle.SP_DialogDiscardButton))
+        self._btn_news_delete_loaded.clicked.connect(self._delete_loaded_news_async)
+        self._news_delete_start = QDateEdit()
+        self._news_delete_start.setCalendarPopup(True)
+        self._news_delete_start.setDisplayFormat("yyyy-MM-dd")
+        self._news_delete_start.setDate(QDate.currentDate().addDays(-7))
+        self._news_delete_end = QDateEdit()
+        self._news_delete_end.setCalendarPopup(True)
+        self._news_delete_end.setDisplayFormat("yyyy-MM-dd")
+        self._news_delete_end.setDate(QDate.currentDate())
+        self._btn_news_delete_range = QPushButton("删除时间段")
+        self._btn_news_delete_range.setObjectName("DangerButton")
+        self._btn_news_delete_range.setIcon(self._std_icon(QStyle.SP_DialogDiscardButton))
+        self._btn_news_delete_range.clicked.connect(self._delete_news_by_date_range_async)
+        news_delete_row.addWidget(self._btn_news_delete_loaded)
+        news_delete_row.addStretch()
+        news_delete_row.addWidget(QLabel("删除日期"))
+        news_delete_row.addWidget(self._news_delete_start)
+        news_delete_row.addWidget(QLabel("至"))
+        news_delete_row.addWidget(self._news_delete_end)
+        news_delete_row.addWidget(self._btn_news_delete_range)
+        news_layout.addLayout(news_delete_row)
+        self._set_news_bulk_delete_enabled(False)
+
+        self._news_table = NewsTableWidget()
+        self._news_table.delete_requested.connect(self._request_delete_news)
+        news_layout.addWidget(self._news_table, stretch=1)
+        news_footer = QHBoxLayout()
+        self._news_page_hint = QLabel("当前无新闻数据")
+        self._news_page_hint.setObjectName("StatusPill")
+        self._btn_news_load_more = QPushButton("加载更多")
+        self._btn_news_load_more.setObjectName("GhostButton")
+        self._btn_news_load_more.clicked.connect(self._load_more_news_rows)
+        news_footer.addWidget(self._news_page_hint)
+        news_footer.addStretch()
+        news_footer.addWidget(self._btn_news_load_more)
+        news_layout.addLayout(news_footer)
+
+        top_splitter.addWidget(crawl_group)
+        top_splitter.addWidget(news_group)
+        top_splitter.setStretchFactor(0, 2)
+        top_splitter.setStretchFactor(1, 5)
+        top_splitter.setSizes([420, 880])
+        main_splitter.addWidget(top_splitter)
+
+        analysis_group = QGroupBox("AI 分析结果")
+        analysis_group.setObjectName("PanelCard")
+        self._apply_card_shadow(analysis_group)
+        analysis_layout = QVBoxLayout(analysis_group)
+        analysis_layout.setContentsMargins(16, 18, 16, 16)
+        analysis_layout.setSpacing(12)
         form = QFormLayout()
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(10)
         self._manual_range = QComboBox()
         self._manual_range.addItems(["24h", "3d", "7d"])
         self._manual_extra = QTextEdit()
         self._manual_extra.setPlaceholderText("可选：对本次分析的补充说明或约束…")
-        self._manual_extra.setMaximumHeight(120)
-        form.addRow("时间范围", self._manual_range)
+        self._manual_extra.setMaximumHeight(90)
+        form.addRow("AI分析时间范围", self._manual_range)
         form.addRow("补充说明", self._manual_extra)
-        layout.addLayout(form)
+        analysis_layout.addLayout(form)
 
         row = QHBoxLayout()
-        self._btn_run_ai = QPushButton("开始 AI 搜索分析")
+        self._btn_run_ai = QPushButton("手动 AI 分析最近新闻")
+        self._btn_run_ai.setIcon(self._std_icon(QStyle.SP_MediaPlay))
         self._btn_run_ai.clicked.connect(self._run_manual_analysis_async)
         row.addWidget(self._btn_run_ai)
         row.addStretch()
-        layout.addLayout(row)
+        analysis_layout.addLayout(row)
 
         self._manual_output = QPlainTextEdit()
         self._manual_output.setReadOnly(True)
-        layout.addWidget(QLabel("输出（结构化 JSON）"))
-        layout.addWidget(self._manual_output)
+        self._manual_output.setMinimumHeight(160)
+        analysis_layout.addWidget(self._manual_output, stretch=1)
+        main_splitter.addWidget(analysis_group)
+        main_splitter.setStretchFactor(0, 3)
+        main_splitter.setStretchFactor(1, 2)
+        main_splitter.setSizes([560, 340])
+
+        content_layout.addWidget(main_splitter, stretch=1)
+        scroll.setWidget(content)
+        layout.addWidget(scroll, stretch=1)
+        self.refresh_news_async()
 
     def _setup_tab_settings(self) -> None:
         root = QVBoxLayout(self._tab_settings)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(12)
 
-        g_store = QGroupBox("本地存储（持久化）")
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        content = QWidget()
+        content.setMinimumWidth(760)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(8, 8, 8, 8)
+        content_layout.setSpacing(18)
+
+        g_store = QGroupBox("本地存储与路径")
         lay_store = QVBoxLayout(g_store)
+        lay_store.setSpacing(10)
         self._storage_paths_text = QPlainTextEdit()
         self._storage_paths_text.setReadOnly(True)
         self._storage_paths_text.setMinimumHeight(120)
-        self._storage_paths_text.setMaximumHeight(200)
         btn_paths = QPushButton("刷新路径说明")
+        btn_paths.setIcon(self._std_icon(QStyle.SP_BrowserReload))
         btn_paths.clicked.connect(self._update_storage_paths_hint)
         lay_store.addWidget(self._storage_paths_text)
         lay_store.addWidget(btn_paths)
-        root.addWidget(g_store)
 
-        g_ai = QGroupBox("DeepSeek")
+        g_ai = QGroupBox("AI 设置（模型 / 参数）")
         f_ai = QFormLayout(g_ai)
+        self._configure_form_layout(f_ai)
         self._set_api_key = QLineEdit()
         self._set_api_key.setEchoMode(QLineEdit.Password)
         self._set_base_url = QLineEdit()
@@ -558,8 +817,9 @@ class MainWindow(QMainWindow):
         f_ai.addRow("Base URL", self._set_base_url)
         f_ai.addRow("Model", self._set_model)
 
-        g_mail = QGroupBox("邮件 SMTP")
+        g_mail = QGroupBox("通知设置（邮件 / 自动分析）")
         f_mail = QFormLayout(g_mail)
+        self._configure_form_layout(f_mail)
         self._set_smtp_host = QLineEdit()
         self._set_smtp_port = QSpinBox()
         self._set_smtp_port.setRange(1, 65535)
@@ -577,23 +837,91 @@ class MainWindow(QMainWindow):
         f_mail.addRow("", self._set_smtp_ssl)
         f_mail.addRow("收件人", self._set_recipients)
 
-        g_sched = QGroupBox("定时任务（占位，后续接入完整管线）")
-        fs = QFormLayout(g_sched)
+        g_sched = QGroupBox("爬虫设置（网站 / 调度）")
+        sched_layout = QVBoxLayout(g_sched)
+        sched_layout.setContentsMargins(16, 18, 16, 16)
+        sched_layout.setSpacing(14)
+
+        sched_top = QHBoxLayout()
+        sched_top.setSpacing(18)
+
+        site_group = QGroupBox("爬取网站")
+        site_layout = QVBoxLayout(site_group)
+        site_layout.setSpacing(10)
+        self._chk_src_ndrc = QCheckBox("国家发改委（ndrc）")
+        self._chk_src_nea = QCheckBox("国家能源局（nea）")
+        self._chk_src_miit = QCheckBox("工业和信息化部（miit）")
+        self._chk_src_china5e = QCheckBox("中国能源网（china5e）")
+        for widget in (
+            self._chk_src_ndrc,
+            self._chk_src_nea,
+            self._chk_src_miit,
+            self._chk_src_china5e,
+        ):
+            site_layout.addWidget(widget)
+        site_layout.addStretch()
+
+        site_limit_row = QHBoxLayout()
+        self._crawl_max_items = QSpinBox()
+        self._crawl_max_items.setRange(1, 50)
+        site_limit_row.addWidget(QLabel("每站最多"))
+        site_limit_row.addWidget(self._crawl_max_items)
+        site_limit_row.addWidget(QLabel("条"))
+        site_limit_row.addStretch()
+        site_layout.addLayout(site_limit_row)
+
+        time_group = QGroupBox("调度时间")
+        time_layout = QVBoxLayout(time_group)
+        time_layout.setSpacing(10)
+
         self._chk_m = QCheckBox("启用")
+        self._freq_m = QComboBox()
+        self._freq_m.addItems(["每天", "每周"])
+        self._weekday_m = QComboBox()
+        self._weekday_m.addItems(["周一", "周二", "周三", "周四", "周五", "周六", "周日"])
         self._time_m = QLineEdit()
         self._chk_n = QCheckBox("启用")
+        self._freq_n = QComboBox()
+        self._freq_n.addItems(["每天", "每周"])
+        self._weekday_n = QComboBox()
+        self._weekday_n.addItems(["周一", "周二", "周三", "周四", "周五", "周六", "周日"])
         self._time_n = QLineEdit()
         self._chk_e = QCheckBox("启用")
+        self._freq_e = QComboBox()
+        self._freq_e.addItems(["每天", "每周"])
+        self._weekday_e = QComboBox()
+        self._weekday_e.addItems(["周一", "周二", "周三", "周四", "周五", "周六", "周日"])
         self._time_e = QLineEdit()
-        fs.addRow("早间", self._chk_m)
-        fs.addRow("早间时间", self._time_m)
-        fs.addRow("午间", self._chk_n)
-        fs.addRow("午间时间", self._time_n)
-        fs.addRow("晚间", self._chk_e)
-        fs.addRow("晚间时间", self._time_e)
 
-        g_other = QGroupBox("其他")
+        for title, enabled, freq, weekday, time_edit in (
+            ("早间", self._chk_m, self._freq_m, self._weekday_m, self._time_m),
+            ("午间", self._chk_n, self._freq_n, self._weekday_n, self._time_n),
+            ("晚间", self._chk_e, self._freq_e, self._weekday_e, self._time_e),
+        ):
+            row = QHBoxLayout()
+            label = QLabel(title)
+            label.setMinimumWidth(42)
+            time_edit.setPlaceholderText("HH:MM")
+            row.addWidget(label)
+            row.addWidget(enabled)
+            row.addWidget(freq)
+            row.addWidget(weekday)
+            row.addWidget(time_edit, stretch=1)
+            time_layout.addLayout(row)
+        time_layout.addStretch()
+
+        sched_top.addWidget(site_group, stretch=1)
+        sched_top.addWidget(time_group, stretch=2)
+        sched_layout.addLayout(sched_top)
+
+        sched_hint = QLabel("左侧选择参与爬取的网站，右侧设置早/午/晚定时任务；底部保存后立即生效。")
+        sched_hint.setObjectName("StatusPill")
+        sched_hint.setWordWrap(True)
+        sched_layout.addWidget(sched_hint)
+
+        g_other = QGroupBox("业务与日志")
         fo = QFormLayout(g_other)
+        self._configure_form_layout(fo)
         self._set_keywords = QLineEdit()
         self._set_keywords.setPlaceholderText("关键词用逗号分隔")
         self._set_db_path = QLineEdit()
@@ -602,49 +930,53 @@ class MainWindow(QMainWindow):
         self._set_log_level.addItems(["DEBUG", "INFO", "WARNING", "ERROR"])
         self._set_prompt = QTextEdit()
         self._set_prompt.setPlaceholderText("自定义系统 Prompt（留空则使用内置）")
-        self._set_prompt.setMaximumHeight(160)
+        self._set_prompt.setMinimumHeight(120)
+        self._set_prompt.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
         fo.addRow("行业关键词", self._set_keywords)
         fo.addRow("数据库路径", self._set_db_path)
         fo.addRow("日志级别", self._set_log_level)
         fo.addRow("系统 Prompt", self._set_prompt)
 
+        grid_splitter = QSplitter(Qt.Horizontal)
+        grid_splitter.setChildrenCollapsible(False)
+        left_col = QWidget()
+        left_layout = QVBoxLayout(left_col)
+        left_layout.setContentsMargins(0, 0, 8, 0)
+        left_layout.setSpacing(18)
+        left_layout.addWidget(g_ai)
+        left_layout.addWidget(g_mail)
+        left_layout.addStretch()
+        right_col = QWidget()
+        right_layout = QVBoxLayout(right_col)
+        right_layout.setContentsMargins(8, 0, 0, 0)
+        right_layout.setSpacing(18)
+        right_layout.addWidget(g_sched)
+        right_layout.addWidget(g_other)
+        right_layout.addStretch()
+        grid_splitter.addWidget(left_col)
+        grid_splitter.addWidget(right_col)
+        grid_splitter.setStretchFactor(0, 1)
+        grid_splitter.setStretchFactor(1, 1)
+
+        content_layout.addWidget(g_store)
+        content_layout.addWidget(grid_splitter, stretch=1)
+        content_layout.addStretch()
+        scroll.setWidget(content)
+        root.addWidget(scroll, stretch=1)
+
         btn_row = QHBoxLayout()
         self._btn_save_settings = QPushButton("保存设置")
+        self._btn_save_settings.setIcon(self._std_icon(QStyle.SP_DialogSaveButton))
         self._btn_save_settings.clicked.connect(self._save_settings_async)
-        btn_row.addWidget(self._btn_save_settings)
         btn_row.addStretch()
-
-        # 左右分栏，避免最大化时所有表单项挤在一条竖线里
-        splitter = QSplitter(Qt.Horizontal)
-        left_col = QWidget()
-        ll = QVBoxLayout(left_col)
-        ll.setContentsMargins(0, 0, 8, 0)
-        ll.addWidget(g_ai)
-        ll.addWidget(g_mail)
-        ll.addStretch()
-
-        right_col = QWidget()
-        rl = QVBoxLayout(right_col)
-        rl.setContentsMargins(8, 0, 0, 0)
-        rl.addWidget(g_sched)
-        rl.addWidget(g_other)
-        rl.addStretch()
-
-        splitter.addWidget(left_col)
-        splitter.addWidget(right_col)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 1)
-        splitter.setChildrenCollapsible(False)
-
-        root.addWidget(g_store)
-        root.addWidget(splitter, stretch=1)
+        btn_row.addWidget(self._btn_save_settings)
         root.addLayout(btn_row)
 
     def _setup_tab_log(self) -> None:
         layout = QVBoxLayout(self._tab_log)
         self._log_edit = QPlainTextEdit()
         self._log_edit.setReadOnly(True)
-        self._sched_status = QLabel("定时任务线程：运行中")
+        self._sched_status = QLabel("日志 定时任务线程：运行中")
         layout.addWidget(self._sched_status)
         layout.addWidget(self._log_edit)
 
@@ -668,23 +1000,8 @@ class MainWindow(QMainWindow):
         else:
             theme.apply_light_theme(pal)
         app.setPalette(pal)
-        if not self._is_dark:
-            app.setStyleSheet(
-                "QMainWindow, QWidget { background: #eef3f8; color: #1f2d3d; }"
-                "QGroupBox { background: #ffffff; border: 1px solid #c8d7e6; border-radius: 8px; margin-top: 12px; padding: 12px; }"
-                "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #0b63ce; font-weight: 600; }"
-                "QTabWidget::pane { border: 1px solid #c8d7e6; background: #f7fbff; }"
-                "QTabBar::tab { padding: 8px 18px; background: #dce8f5; border: 1px solid #c8d7e6; border-bottom: none; }"
-                "QTabBar::tab:selected { background: #ffffff; color: #0b63ce; font-weight: 600; }"
-                "QPushButton { background: #0b63ce; color: white; border: none; border-radius: 5px; padding: 6px 12px; }"
-                "QPushButton:hover { background: #084f9f; }"
-                "QLineEdit, QComboBox, QTextEdit, QPlainTextEdit, QTableWidget, QListWidget { background: #ffffff; border: 1px solid #c8d7e6; border-radius: 4px; padding: 4px; }"
-                "QProgressBar { border: 1px solid #c8d7e6; border-radius: 5px; background: #edf4fb; text-align: center; min-height: 18px; }"
-                "QProgressBar::chunk { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #12b5cb, stop:1 #0b63ce); border-radius: 4px; }"
-                "QLabel#KpiValue { color: #0b63ce; font-size: 26px; font-weight: 700; }"
-            )
-        else:
-            app.setStyleSheet("")
+        app.setFont(QFont("Microsoft YaHei UI", 10))
+        app.setStyleSheet("" if self._is_dark else modern_light_qss())
 
     @Slot()
     def _toggle_theme(self) -> None:
@@ -731,11 +1048,27 @@ class MainWindow(QMainWindow):
         self._set_smtp_ssl.setChecked(s.smtp_use_ssl)
         self._set_recipients.setText(",".join(s.mail_recipients))
         self._chk_m.setChecked(s.scheduler_morning.enabled)
+        self._freq_m.setCurrentIndex(1 if s.scheduler_morning.frequency == "weekly" else 0)
+        self._weekday_m.setCurrentIndex(int(s.scheduler_morning.weekday) % 7)
         self._time_m.setText(s.scheduler_morning.time)
         self._chk_n.setChecked(s.scheduler_noon.enabled)
+        self._freq_n.setCurrentIndex(1 if s.scheduler_noon.frequency == "weekly" else 0)
+        self._weekday_n.setCurrentIndex(int(s.scheduler_noon.weekday) % 7)
         self._time_n.setText(s.scheduler_noon.time)
         self._chk_e.setChecked(s.scheduler_evening.enabled)
+        self._freq_e.setCurrentIndex(1 if s.scheduler_evening.frequency == "weekly" else 0)
+        self._weekday_e.setCurrentIndex(int(s.scheduler_evening.weekday) % 7)
         self._time_e.setText(s.scheduler_evening.time)
+        source_checks = {
+            "ndrc": self._chk_src_ndrc,
+            "nea": self._chk_src_nea,
+            "miit": self._chk_src_miit,
+            "china5e": self._chk_src_china5e,
+        }
+        enabled_sources = set(s.crawl_source_ids or source_checks.keys())
+        for source_id, checkbox in source_checks.items():
+            checkbox.setChecked(source_id in enabled_sources)
+        self._crawl_max_items.setValue(int(s.crawl_max_items_per_source))
         self._set_keywords.setText(",".join(s.industry_keywords))
         self._set_db_path.blockSignals(True)
         self._set_db_path.setText(s.database_path)
@@ -748,6 +1081,13 @@ class MainWindow(QMainWindow):
     def _read_settings_from_widgets(self) -> AppSettings:
         rec = [x.strip() for x in self._set_recipients.text().split(",") if x.strip()]
         kws = [x.strip() for x in self._set_keywords.text().split(",") if x.strip()]
+        source_checks = (
+            ("ndrc", self._chk_src_ndrc),
+            ("nea", self._chk_src_nea),
+            ("miit", self._chk_src_miit),
+            ("china5e", self._chk_src_china5e),
+        )
+        selected_sources = [source_id for source_id, checkbox in source_checks if checkbox.isChecked()]
         s = AppSettings(
             log_level=self._set_log_level.currentText(),
             deepseek_api_key=self._set_api_key.text().strip(),
@@ -762,17 +1102,25 @@ class MainWindow(QMainWindow):
             scheduler_morning=SchedulerSlot(
                 enabled=self._chk_m.isChecked(),
                 time=self._time_m.text().strip() or "07:30",
+                frequency="weekly" if self._freq_m.currentText() == "每周" else "daily",
+                weekday=int(self._weekday_m.currentIndex()),
             ),
             scheduler_noon=SchedulerSlot(
                 enabled=self._chk_n.isChecked(),
                 time=self._time_n.text().strip() or "12:30",
+                frequency="weekly" if self._freq_n.currentText() == "每周" else "daily",
+                weekday=int(self._weekday_n.currentIndex()),
             ),
             scheduler_evening=SchedulerSlot(
                 enabled=self._chk_e.isChecked(),
                 time=self._time_e.text().strip() or "20:00",
+                frequency="weekly" if self._freq_e.currentText() == "每周" else "daily",
+                weekday=int(self._weekday_e.currentIndex()),
             ),
             industry_keywords=kws or self._settings.industry_keywords,
             database_path=self._set_db_path.text().strip() or self._settings.database_path,
+            crawl_source_ids=selected_sources or self._settings.crawl_source_ids,
+            crawl_max_items_per_source=int(self._crawl_max_items.value()),
             custom_system_prompt=self._set_prompt.toPlainText(),
         )
         return s
@@ -848,6 +1196,254 @@ class MainWindow(QMainWindow):
     def _on_export_fail(self, msg: str) -> None:
         self.statusBar().showMessage("导出失败", 8000)
         QMessageBox.critical(self, "失败", msg)
+
+    def _reset_crawl_steps(self) -> None:
+        self._crawl_step_status = {
+            "连接网站": "等待",
+            "请求新闻列表": "等待",
+            "解析新闻内容": "等待",
+            "写入SQLite数据库": "等待",
+            "爬取完成": "等待",
+        }
+        if hasattr(self, "_crawl_log_view"):
+            self._crawl_log_view.clear()
+            self._append_crawl_log("系统", "等待", "爬取任务尚未开始")
+        if hasattr(self, "_crawl_status_label"):
+            self._crawl_status_label.setText("等待开始爬取")
+
+    @Slot(str, str, str)
+    def _on_crawl_step_changed(self, step: str, status: str, detail: str) -> None:
+        self._crawl_step_status[step] = status
+        self._append_crawl_log(step, status, detail)
+        if hasattr(self, "_crawl_status_label"):
+            summary = " ｜ ".join(f"{k}:{v}" for k, v in self._crawl_step_status.items())
+            self._crawl_status_label.setText(summary)
+
+    def _append_crawl_log(self, step: str, status: str, detail: str) -> None:
+        if not hasattr(self, "_crawl_log_view"):
+            return
+        color_map = {
+            "进行中": "#2563EB",
+            "成功": "#16A34A",
+            "失败": "#DC2626",
+            "等待": "#64748B",
+        }
+        now = datetime.now().strftime("%H:%M:%S")
+        color = color_map.get(status, "#334155")
+        safe_detail = str(detail or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        self._crawl_log_view.append(
+            f'<div style="margin:4px 0;">'
+            f'<span style="color:#64748B;">[{now}]</span> '
+            f'<b>{step}</b> '
+            f'<span style="color:{color};font-weight:600;">{status}</span> '
+            f'<span style="color:#0F172A;">{safe_detail}</span>'
+            f'</div>'
+        )
+        self._crawl_log_view.verticalScrollBar().setValue(self._crawl_log_view.verticalScrollBar().maximum())
+
+    def refresh_news_async(self) -> None:
+        if not hasattr(self, "_news_table"):
+            return
+        source = self._news_source_filter.currentText() if hasattr(self, "_news_source_filter") else "全部"
+        days = int(self._news_days_filter.value()) if hasattr(self, "_news_days_filter") else 7
+        self.statusBar().showMessage("正在加载新闻数据…", 3000)
+        if hasattr(self, "_btn_news_refresh"):
+            self._btn_news_refresh.setEnabled(False)
+            self._btn_news_refresh.setText("加载中…")
+        self._set_news_bulk_delete_enabled(False)
+        thread = QThread(self)
+        worker = NewsLoadWorker(self._settings.database_path, days=days, source=source, limit=500)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.loaded.connect(self._on_news_loaded)
+        worker.failed.connect(self._on_news_load_failed)
+        worker.loaded.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.loaded.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._retain_worker_thread(thread, worker)
+        thread.start()
+
+    @Slot(list, list)
+    def _on_news_loaded(self, rows: list, sources: list) -> None:
+        self._cached_news_rows = rows
+        current = self._news_source_filter.currentText() if hasattr(self, "_news_source_filter") else "全部"
+        self._news_source_filter.blockSignals(True)
+        self._news_source_filter.clear()
+        self._news_source_filter.addItem("全部")
+        self._news_source_filter.addItems([str(source) for source in sources])
+        idx = self._news_source_filter.findText(current)
+        if idx >= 0:
+            self._news_source_filter.setCurrentIndex(idx)
+        self._news_source_filter.blockSignals(False)
+        self._populate_news_table(rows)
+        if hasattr(self, "_btn_news_refresh"):
+            self._btn_news_refresh.setEnabled(True)
+            self._btn_news_refresh.setText("刷新新闻")
+        self._set_news_bulk_delete_enabled(bool(rows))
+        rendered = self._news_table.rendered_count()
+        more = "，可点击“加载更多”继续显示" if len(rows) > rendered else ""
+        self.statusBar().showMessage(f"已加载 {len(rows)} 条新闻，当前显示 {rendered} 条{more}", 5000)
+
+    @Slot(str)
+    def _on_news_load_failed(self, msg: str) -> None:
+        if hasattr(self, "_btn_news_refresh"):
+            self._btn_news_refresh.setEnabled(True)
+            self._btn_news_refresh.setText("刷新新闻")
+        self._set_news_bulk_delete_enabled(bool(getattr(self, "_cached_news_rows", [])))
+        self.statusBar().showMessage("新闻加载失败", 8000)
+        QMessageBox.warning(self, "新闻加载失败", msg)
+
+    def _short_text(self, text: str, limit: int = 160) -> str:
+        clean = " ".join(str(text or "").split())
+        return clean if len(clean) <= limit else f"{clean[:limit]}…"
+
+    def _populate_news_table(self, rows: list[dict]) -> None:
+        rendered = self._news_table.set_rows(rows, visible_count=120)
+        self._update_news_page_hint(rendered)
+
+    @Slot()
+    def _load_more_news_rows(self) -> None:
+        rendered = self._news_table.load_more(step=80)
+        self._update_news_page_hint(rendered)
+
+    def _update_news_page_hint(self, rendered: int | None = None) -> None:
+        if not hasattr(self, "_news_page_hint"):
+            return
+        rendered_count = self._news_table.rendered_count() if rendered is None else rendered
+        total = self._news_table.total_count()
+        self._news_page_hint.setText(f"显示 {rendered_count} / {total} 条")
+        if hasattr(self, "_btn_news_load_more"):
+            self._btn_news_load_more.setEnabled(rendered_count < total)
+
+    def _set_news_bulk_delete_enabled(self, enabled: bool) -> None:
+        for name in ("_btn_news_delete_loaded", "_btn_news_delete_range"):
+            if hasattr(self, name):
+                getattr(self, name).setEnabled(enabled)
+
+    def _run_news_bulk_delete_worker(
+        self,
+        *,
+        news_ids: list[int] | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        source: str | None = None,
+    ) -> None:
+        self._set_news_bulk_delete_enabled(False)
+        self.statusBar().showMessage("正在批量删除新闻…", 3000)
+        thread = QThread(self)
+        worker = NewsBulkDeleteWorker(
+            self._settings.database_path,
+            news_ids=news_ids,
+            start_at=start_at,
+            end_at=end_at,
+            source=source,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished_ok.connect(self._on_news_bulk_delete_ok)
+        worker.failed.connect(self._on_news_bulk_delete_failed)
+        worker.finished_ok.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished_ok.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._retain_worker_thread(thread, worker)
+        thread.start()
+
+    @Slot()
+    def _delete_loaded_news_async(self) -> None:
+        news_ids = [int(row["id"]) for row in self._cached_news_rows if row.get("id") is not None]
+        if not news_ids:
+            QMessageBox.information(self, "无可删除数据", "当前新闻列表没有可删除的数据。")
+            return
+        source = self._news_source_filter.currentText() if hasattr(self, "_news_source_filter") else "全部"
+        days = int(self._news_days_filter.value()) if hasattr(self, "_news_days_filter") else 7
+        reply = QMessageBox.question(
+            self,
+            "确认批量删除",
+            f"确定要删除当前筛选列表中的全部新闻吗？\n\n范围：网站={source}，最近 {days} 天\n数量：{len(news_ids)} 条\n\n此操作不可撤销。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self._run_news_bulk_delete_worker(news_ids=news_ids)
+
+    @Slot()
+    def _delete_news_by_date_range_async(self) -> None:
+        start_qdate = self._news_delete_start.date()
+        end_qdate = self._news_delete_end.date()
+        if start_qdate > end_qdate:
+            QMessageBox.warning(self, "时间段无效", "开始日期不能晚于结束日期。")
+            return
+        start_py = start_qdate.toPython()
+        end_py = end_qdate.toPython()
+        start_at = datetime(start_py.year, start_py.month, start_py.day)
+        end_at = datetime(end_py.year, end_py.month, end_py.day) + timedelta(days=1)
+        source = self._news_source_filter.currentText() if hasattr(self, "_news_source_filter") else "全部"
+        source_hint = "全部网站" if source == "全部" else source
+        reply = QMessageBox.question(
+            self,
+            "确认按时间段删除",
+            f"确定要删除该时间段内的新闻吗？\n\n日期：{start_py:%Y-%m-%d} 至 {end_py:%Y-%m-%d}\n网站：{source_hint}\n\n此操作不可撤销。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self._run_news_bulk_delete_worker(start_at=start_at, end_at=end_at, source=source)
+
+    @Slot(int)
+    def _on_news_bulk_delete_ok(self, deleted: int) -> None:
+        self.statusBar().showMessage(f"已删除 {deleted} 条新闻，正在刷新列表…", 5000)
+        QMessageBox.information(self, "删除完成", f"已删除 {deleted} 条新闻。")
+        self.refresh_news_async()
+
+    @Slot(str)
+    def _on_news_bulk_delete_failed(self, msg: str) -> None:
+        self._set_news_bulk_delete_enabled(True)
+        self.statusBar().showMessage("批量删除失败", 8000)
+        QMessageBox.critical(self, "批量删除失败", msg)
+
+    @Slot(int, str)
+    def _request_delete_news(self, news_id_int: int, title: str) -> None:
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确定要删除这条新闻吗？\n\n{title}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            self._news_table.reset_delete_buttons()
+            return
+        self.statusBar().showMessage("正在删除新闻…", 3000)
+        thread = QThread(self)
+        worker = NewsDeleteWorker(self._settings.database_path, news_id_int)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished_ok.connect(self._on_news_delete_ok)
+        worker.failed.connect(self._on_news_delete_failed)
+        worker.finished_ok.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished_ok.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._retain_worker_thread(thread, worker)
+        thread.start()
+
+    @Slot(int)
+    def _on_news_delete_ok(self, _news_id: int) -> None:
+        self.statusBar().showMessage("新闻已删除，正在刷新列表…", 5000)
+        self.refresh_news_async()
+
+    @Slot(str)
+    def _on_news_delete_failed(self, msg: str) -> None:
+        self._news_table.reset_delete_buttons()
+        self.statusBar().showMessage("新闻删除失败", 8000)
+        QMessageBox.critical(self, "删除失败", msg)
 
     # --- 异步任务 ---
     def refresh_records_async(self) -> None:
@@ -1266,7 +1862,14 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_scheduler_job_due(self, slot_name: str) -> None:
         logger.info("收到定时任务触发信号：{}", slot_name)
-        self._run_scheduled_analysis_async(slot_name)
+        self._append_log_line(f"定时任务触发：{slot_name}，开始执行自动爬取→AI分析→邮件通知流程。")
+        if hasattr(self, "_tabs"):
+            self._tabs.setCurrentWidget(self._tab_manual)
+        if hasattr(self, "_chk_auto_ai_after_crawl"):
+            self._chk_auto_ai_after_crawl.setChecked(True)
+        if hasattr(self, "_chk_auto_mail_after_ai"):
+            self._chk_auto_mail_after_ai.setChecked(True)
+        self._run_crawl_pipeline_async()
 
     def _run_scheduled_analysis_async(self, slot_name: str) -> None:
         if not self._settings.deepseek_api_key.strip():
@@ -1365,31 +1968,74 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("定时分析失败", 8000)
         self._append_log_line(f"定时分析失败：{msg}")
 
-    def _run_manual_analysis_async(self) -> None:
+    def _run_crawl_pipeline_async(self) -> None:
+        if hasattr(self, "_btn_start_crawl") and not self._btn_start_crawl.isEnabled():
+            self._append_log_line("已有爬取任务正在执行，跳过本次触发。")
+            return
+        self._settings = self._read_settings_from_widgets()
+        self._auto_ai_after_crawl = self._chk_auto_ai_after_crawl.isChecked()
+        self._auto_mail_after_ai = self._chk_auto_mail_after_ai.isChecked()
+        self._btn_start_crawl.setEnabled(False)
+        self._reset_crawl_steps()
+        self.statusBar().showMessage("正在后台爬取新闻…", 0)
+
+        thread = QThread(self)
+        worker = CrawlPipelineWorker(self._settings, days=int(self._crawl_days.value()))
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.step_changed.connect(self._on_crawl_step_changed)
+        worker.log_line.connect(self._append_log_line)
+        worker.finished_ok.connect(self._on_crawl_pipeline_ok)
+        worker.failed.connect(self._on_crawl_pipeline_fail)
+        worker.finished_ok.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished_ok.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._retain_worker_thread(thread, worker)
+        thread.start()
+
+    @Slot(int)
+    def _on_crawl_pipeline_ok(self, inserted: int) -> None:
+        self._btn_start_crawl.setEnabled(True)
+        self.statusBar().showMessage(f"爬取完成，新增 {inserted} 条新闻", 8000)
+        self.refresh_news_async()
+        if self._auto_ai_after_crawl:
+            self._run_recent_news_analysis_async(auto_trigger=True)
+
+    @Slot(str)
+    def _on_crawl_pipeline_fail(self, msg: str) -> None:
+        self._btn_start_crawl.setEnabled(True)
+        self.statusBar().showMessage("爬取失败", 8000)
+        QMessageBox.critical(self, "爬取失败", msg)
+
+    def _run_recent_news_analysis_async(self, *, auto_trigger: bool = False) -> None:
         self._settings = self._read_settings_from_widgets()
         if not self._settings.deepseek_api_key.strip():
-            QMessageBox.information(
-                self,
-                "提示",
-                "请在「设置」中填写 DeepSeek API Key。\n"
-                "填写后可直接点「开始 AI 搜索分析」；点「保存设置」可将配置写入本地文件以便下次启动使用。",
-            )
+            if auto_trigger:
+                self._append_log_line("自动 AI 分析跳过：DeepSeek API Key 未配置。")
+                return
+            QMessageBox.information(self, "提示", "请在「设置」中填写 DeepSeek API Key。")
             self._tabs.setCurrentIndex(3)
             return
-
         self._btn_run_ai.setEnabled(False)
-        self._manual_output.setPlainText("")
-        self.statusBar().showMessage("正在调用 DeepSeek API（后台线程）…", 0)
-
-        tr = self._manual_range.currentText()
-        extra = self._manual_extra.toPlainText()
+        if auto_trigger:
+            self._append_crawl_log("AI分析", "进行中", "爬取完成后自动触发 AI 分析")
+        self._manual_output.setPlainText("正在基于 SQLite 最近新闻执行 AI 分析…")
+        self.statusBar().showMessage("正在分析最近爬取数据…", 0)
+        days_map = {"24h": 1, "3d": 3, "7d": 7}
+        days = days_map.get(self._manual_range.currentText(), 3)
         thread = QThread(self)
-        worker = AiAnalysisWorker(self._settings, user_extra=extra, time_range=tr, persist=True)
+        worker = RecentNewsAnalysisWorker(
+            self._settings,
+            days=days,
+            user_extra=self._manual_extra.toPlainText(),
+            persist=True,
+        )
         worker.moveToThread(thread)
-
         thread.started.connect(worker.run)
-        worker.finished_ok.connect(self._on_ai_analysis_ok)
-        worker.failed.connect(self._on_ai_analysis_fail)
+        worker.finished_ok.connect(self._on_recent_news_analysis_ok)
+        worker.failed.connect(self._on_recent_news_analysis_fail)
         worker.log_line.connect(self._append_log_line)
         worker.finished_ok.connect(thread.quit)
         worker.failed.connect(thread.quit)
@@ -1398,6 +2044,72 @@ class MainWindow(QMainWindow):
         thread.finished.connect(thread.deleteLater)
         self._retain_worker_thread(thread, worker)
         thread.start()
+
+    @Slot(dict)
+    def _on_recent_news_analysis_ok(self, data: dict) -> None:
+        self._last_ai_result = data
+        self._manual_output.setPlainText(json.dumps(data, ensure_ascii=False, indent=2))
+        self._btn_run_ai.setEnabled(True)
+        self.statusBar().showMessage("AI 分析完成，已写入 SQLite", 8000)
+        self._append_crawl_log("AI分析", "成功", "AI 分析完成并已写入 SQLite")
+        self.refresh_records_async()
+        if self._auto_mail_after_ai or self._chk_auto_mail_after_ai.isChecked():
+            self._send_ai_result_email_async(data)
+
+    @Slot(str)
+    def _on_recent_news_analysis_fail(self, msg: str) -> None:
+        self._manual_output.setPlainText(msg)
+        self._btn_run_ai.setEnabled(True)
+        self.statusBar().showMessage("AI 分析失败", 8000)
+        self._append_crawl_log("AI分析", "失败", msg)
+        QMessageBox.critical(self, "AI 分析失败", msg)
+
+    def _send_ai_result_email_async(self, data: dict) -> None:
+        if not self._settings.smtp_host or not self._settings.mail_recipients:
+            self._append_crawl_log("邮件通知", "失败", "SMTP 服务器或收件人未配置")
+            self._append_log_line("AI 分析邮件未发送：SMTP 服务器或收件人未配置。")
+            return
+        if not self._settings.smtp_user or not self._settings.smtp_password:
+            self._append_crawl_log("邮件通知", "失败", "SMTP 账号或密码未配置")
+            self._append_log_line("AI 分析邮件未发送：SMTP 账号或密码未配置。")
+            return
+        title = str(data.get("title") or "AI行业情报分析")
+        summary = str(data.get("summary") or "")
+        impact = self._format_json_like_text(data.get("impact", ""))
+        analysis = str(data.get("analysis") or "")
+        html = f"""
+        <div style="font-family: Microsoft YaHei, Arial, sans-serif; line-height:1.7; color:#0f172a;">
+          <h2 style="color:#1E40AF;">AI行业情报分析结果</h2>
+          <h3>{title}</h3>
+          <p><b>新闻摘要：</b>{summary or '暂无'}</p>
+          <p><b>行业趋势判断 / 分析：</b></p>
+          <pre style="white-space:pre-wrap;background:#f8fafc;border:1px solid #dbeafe;padding:12px;">{analysis or '暂无'}</pre>
+          <p><b>潜在影响分析：</b></p>
+          <pre style="white-space:pre-wrap;background:#f8fafc;border:1px solid #dbeafe;padding:12px;">{impact or '暂无'}</pre>
+          <hr />
+          <p style="color:#64748b;font-size:12px;">本系统所提供内容不构成任何投资建议及荐股，因使用本系统所造成的任何损失，由使用者自行承担。</p>
+        </div>
+        """
+        thread = QThread(self)
+        self._append_crawl_log("邮件通知", "进行中", f"准备发送 AI 分析结果邮件：{title}")
+        worker = EmailSendWorker(self._settings, subject=f"[行业情报系统] {title}", html=html, retries=2)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.log_line.connect(self._append_log_line)
+        worker.finished_ok.connect(lambda: self.statusBar().showMessage("AI 分析结果邮件已发送", 8000))
+        worker.finished_ok.connect(lambda: self._append_crawl_log("邮件通知", "成功", "AI 分析结果邮件已发送"))
+        worker.failed.connect(lambda msg: self._append_crawl_log("邮件通知", "失败", msg))
+        worker.failed.connect(lambda msg: self._append_log_line(f"AI 分析结果邮件发送失败：{msg}"))
+        worker.finished_ok.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished_ok.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._retain_worker_thread(thread, worker)
+        thread.start()
+
+    def _run_manual_analysis_async(self) -> None:
+        self._run_recent_news_analysis_async(auto_trigger=False)
 
     def _save_settings_async(self) -> None:
         self._settings = self._read_settings_from_widgets()

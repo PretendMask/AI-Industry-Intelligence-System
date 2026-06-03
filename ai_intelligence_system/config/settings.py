@@ -14,10 +14,12 @@ from ai_intelligence_system.utils.paths import default_database_path, user_confi
 
 
 class SchedulerSlot(BaseModel):
-    """单个定时任务开关与时间（HH:MM）。"""
+    """单个定时任务开关、频率与时间（HH:MM）。"""
 
     enabled: bool = True
     time: str = "07:30"
+    frequency: str = "daily"  # daily | weekly
+    weekday: int = 0  # 0=周一 ... 6=周日，仅 weekly 生效
 
 
 class AppSettings(BaseSettings):
@@ -69,6 +71,12 @@ class AppSettings(BaseSettings):
     )
     database_path: str = Field(default_factory=lambda: str(default_database_path()))
 
+    # 定向爬虫（source_id 列表，见 core/crawler_factory）
+    crawl_source_ids: list[str] = Field(
+        default_factory=lambda: ["ndrc", "nea", "miit", "china5e"]
+    )
+    crawl_max_items_per_source: int = Field(default=10, ge=1, le=50)
+
     # 手动分析默认 Prompt 可由界面覆盖后保存
     custom_system_prompt: str = ""
 
@@ -97,6 +105,10 @@ class _PersistedConfig(BaseModel):
     )
     industry_keywords: list[str] = Field(default_factory=list)
     database_path: str = ""
+    crawl_source_ids: list[str] = Field(
+        default_factory=lambda: ["ndrc", "nea", "miit", "china5e"]
+    )
+    crawl_max_items_per_source: int = 10
     custom_system_prompt: str = ""
 
 
@@ -127,6 +139,9 @@ def load_settings() -> AppSettings:
         scheduler_evening=persisted.scheduler_evening,
         industry_keywords=persisted.industry_keywords or AppSettings().industry_keywords,
         database_path=db_path,
+        crawl_source_ids=persisted.crawl_source_ids
+        or ["ndrc", "nea", "miit", "china5e"],
+        crawl_max_items_per_source=persisted.crawl_max_items_per_source or 10,
         custom_system_prompt=persisted.custom_system_prompt,
     )
 
@@ -149,6 +164,8 @@ def save_settings(settings: AppSettings) -> None:
         scheduler_evening=settings.scheduler_evening,
         industry_keywords=settings.industry_keywords,
         database_path=settings.database_path,
+        crawl_source_ids=settings.crawl_source_ids,
+        crawl_max_items_per_source=settings.crawl_max_items_per_source,
         custom_system_prompt=settings.custom_system_prompt,
     )
     path.parent.mkdir(parents=True, exist_ok=True)

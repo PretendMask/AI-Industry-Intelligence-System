@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, Integer, String, Text
+from sqlalchemy import DateTime, Float, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -27,3 +27,19 @@ class IntelligenceRecord(Base):
     stage: Mapped[str] = mapped_column(String(128), default="")
     tags: Mapped[str] = mapped_column(Text, default="")  # 逗号分隔或 JSON
     raw_json: Mapped[str] = mapped_column(Text, default="")
+
+
+class NewsRecord(Base):
+    __tablename__ = "news_records"
+    __table_args__ = (UniqueConstraint("url", name="uq_news_records_url"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(512), default="")
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    publish_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    source: Mapped[str] = mapped_column(String(256), default="", index=True)
+    content: Mapped[str] = mapped_column(Text, default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    raw_html: Mapped[str] = mapped_column(Text, default="")
+    metadata_json: Mapped[str] = mapped_column(Text, default="")
+    crawled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
