@@ -5,9 +5,9 @@
 
 **Windows 一键安装程序（推荐）**
 
-[![Download v1.0](https://img.shields.io/badge/Download-v1.0-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/PretendMask/AI-Industry-Intelligence-System/releases/download/v1.0.0/Industry-Intelligence-Setup-v1.0.exe)
+[![Download v2.0](https://img.shields.io/badge/Download-v2.0-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/PretendMask/AI-Industry-Intelligence-System/releases/download/v2.0.0/Industry-Intelligence-Setup-v2.0.exe)
 
-> 文件大小 ≈ 55 MB｜支持 Windows 10/11
+> 文件大小 ≈ 43 MB｜支持 Windows 10/11
 ## 📸 界面预览
 
 ### 仪表盘
@@ -22,6 +22,7 @@
 ### 定时邮件通知
 ![邮件通知](screenshots/1-email.png)
 
+![邮件通知2](screenshots/2-email.png)
 ## 环境要求
 
 - Python 3.10 或更高版本
@@ -76,12 +77,13 @@ python main.py
 ## 开发说明
 
 - 网络请求、AI 调用、数据库批量读写、导出、邮件发送等均在 **QThread + QObject Worker** 中执行，避免阻塞 UI。
+- 统一爬虫框架（BaseCrawler），快速扩展新来源
 - 定时任务使用 **APScheduler** 的 `BackgroundScheduler`，在 **独立 QThread** 中启停（见 `core/scheduler.py`）。
 
 ## 近期（Roadmap）
 
-- 升级为协同架构（定向抓取国家发改委、国家能源局、财联社、国家统计局等官方及财经新闻等更多权威渠道）
-- DeepSeek API只用于内容解析，不做数据获取，对候票池进行新闻情绪打分、多因子综合推理，输出结构化 JSON + 中文诊断报告
+- ✔️升级为协同架构（定向抓取国家发改委、国家能源局、财联社、国家统计局等官方及财经新闻等更多权威渠道）
+- ✔️DeepSeek API只用于内容解析，不做数据获取，对候票池进行新闻情绪打分、多因子综合推理，输出结构化 JSON + 中文诊断报告
 - 增强政策解读深度与影响分析
 
 
