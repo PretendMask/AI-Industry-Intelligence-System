@@ -1,6 +1,6 @@
 # 行业情报系统（桌面版）
 
-基于 **Python 3.10+**、**PySide6**、**SQLite** 与 **DeepSeek API** 的个人行业情报桌面应用：手动/定时分析、本地存储、邮件推送（SMTP）。
+基于 **Python 3.10+**、**PySide6**、**SQLite** 与 **DeepSeek API** 的个人行业情报桌面应用：定时采集、手动/定时分析、本地存储、邮件推送（SMTP）。
 ## 下载安装
 
 **Windows 一键安装程序（推荐）**
