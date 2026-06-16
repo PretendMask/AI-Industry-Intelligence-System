@@ -359,4 +359,7 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
     background: transparent;
 }
+
+/* ── Terminal Panel (Financial Terminal Style) ── */
+/* PLACEHOLDER_TERMINAL_STYLES */
 """

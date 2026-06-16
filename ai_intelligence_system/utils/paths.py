@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -12,14 +13,22 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _user_data_root() -> Path:
+    """用户可写数据根目录。打包后使用 APPDATA，开发时使用项目根。"""
+    if getattr(sys, "frozen", False):
+        base = Path(os.environ.get("APPDATA", "~")).expanduser()
+        return base / "AIIntelligenceSystem"
+    return project_root()
+
+
 def data_dir() -> Path:
-    p = project_root() / "data"
+    p = _user_data_root() / "data"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
 def logs_dir() -> Path:
-    p = project_root() / "logs"
+    p = _user_data_root() / "logs"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -29,7 +38,7 @@ def default_database_path() -> Path:
 
 
 def config_dir() -> Path:
-    p = project_root() / "config"
+    p = _user_data_root() / "config"
     p.mkdir(parents=True, exist_ok=True)
     return p
 

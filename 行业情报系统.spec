@@ -1,25 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_dynamic_libs
 from PyInstaller.utils.hooks import collect_submodules
 
-binaries = []
-hiddenimports = ['PySide6.QtXml', 'PySide6.QtNetwork', 'PySide6.QtPrintSupport']
-binaries += collect_dynamic_libs('PySide6')
+hiddenimports = ['bs4', 'ai_intelligence_system.core.crawlers.*', 'ai_intelligence_system.core.data_collector']
 hiddenimports += collect_submodules('PySide6.QtCore')
 hiddenimports += collect_submodules('PySide6.QtGui')
 hiddenimports += collect_submodules('PySide6.QtWidgets')
+hiddenimports += collect_submodules('PySide6.QtNetwork')
 
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=binaries,
-    datas=[('ico.ico', '.'), ('ai_intelligence_system', 'ai_intelligence_system'), ('config', 'config'), ('data', 'data')],
+    binaries=[],
+    datas=[('ico.ico', '.'), ('ai_intelligence_system', 'ai_intelligence_system'), ('config', 'config'), ('data', 'data'), ('logs', 'logs')],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['PySide6.QtQml', 'PySide6.QtQuick', 'PySide6.QtWebEngine*', 'PySide6.scripts'],
+    excludes=['PySide6.QtQml', 'PySide6.QtQuick', 'PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets', 'PySide6.scripts.deploy_lib'],
     noarchive=False,
     optimize=0,
 )
