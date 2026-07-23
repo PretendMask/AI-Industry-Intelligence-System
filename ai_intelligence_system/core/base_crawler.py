@@ -139,16 +139,26 @@ class BaseCrawler(abc.ABC):
         *,
         encoding: str | None = None,
     ) -> str:
+        self.logger.debug("HTTP 请求: GET {}", url)
         try:
             resp = await client.get(url, timeout=self._timeout_sec)
             resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            self.logger.error("HTTP 状态错误: {} {}", url, exc.response.status_code)
+            raise CrawlerError(f"HTTP 状态 {exc.response.status_code}: {url}") from exc
+        except httpx.TimeoutException as exc:
+            self.logger.error("HTTP 超时: {}", url)
+            raise CrawlerError(f"HTTP 超时: {url}") from exc
         except httpx.HTTPError as exc:
+            self.logger.error("HTTP 请求失败: {} - {}", url, exc)
             raise CrawlerError(f"HTTP 请求失败: {url}") from exc
 
+        # 必须在访问 resp.text 之前设置 encoding，否则 httpx 会抛出 ValueError
         if encoding:
             resp.encoding = encoding
         elif not resp.encoding or resp.encoding.lower() == "iso-8859-1":
             resp.encoding = resp.charset_encoding or "utf-8"
+        self.logger.debug("HTTP 响应: status={} encoding={} length={}", resp.status_code, resp.encoding, len(resp.text))
         return resp.text
 
     async def fetch_html_raw(
@@ -198,23 +208,32 @@ class BaseCrawler(abc.ABC):
         entries: list[dict[str, Any]],
     ) -> list[NewsItem]:
         """并发抓取详情页。"""
+        self.logger.info("开始批量抓取详情: {} 条, 并发数={}", len(entries), self._detail_concurrency)
         sem = asyncio.Semaphore(self._detail_concurrency)
         items: list[NewsItem] = []
+        success_count = [0]
+        fail_count = [0]
 
         async def one(entry: dict[str, Any]) -> NewsItem | None:
             async with sem:
                 try:
-                    return await self.fetch_article_item(client, entry)
+                    result = await self.fetch_article_item(client, entry)
+                    success_count[0] += 1
+                    self.logger.debug("详情抓取成功 [{}/{}]: {}", success_count[0] + fail_count[0], len(entries), entry.get("url"))
+                    return result
                 except CrawlerError as exc:
-                    self.logger.warning("详情失败 {}: {}", entry.get("url"), exc)
+                    fail_count[0] += 1
+                    self.logger.warning("详情失败 [{}/{}] {}: {}", success_count[0] + fail_count[0], len(entries), entry.get("url"), exc)
                 except Exception as exc:  # noqa: BLE001
-                    self.logger.exception("详情异常 {}: {}", entry.get("url"), exc)
+                    fail_count[0] += 1
+                    self.logger.exception("详情异常 [{}/{}] {}: {}", success_count[0] + fail_count[0], len(entries), entry.get("url"), exc)
                 return None
 
         results = await asyncio.gather(*[one(e) for e in entries])
         for r in results:
             if r is not None:
                 items.append(r)
+        self.logger.info("批量详情抓取完成: 成功{} / 失败{} / 总计{}", success_count[0], fail_count[0], len(entries))
         return items
 
     async def fetch_article_item(

@@ -149,7 +149,9 @@ def list_recent_news(
     stmt = select(NewsRecord)
     if days and days > 0:
         cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
-        stmt = stmt.where(NewsRecord.publish_time >= cutoff)
+        stmt = stmt.where(
+            (NewsRecord.publish_time >= cutoff) | (NewsRecord.publish_time == None)
+        )
     if source and source != "全部":
         stmt = stmt.where(NewsRecord.source == source)
     stmt = stmt.order_by(NewsRecord.publish_time.desc().nullslast(), NewsRecord.crawled_at.desc()).limit(limit)

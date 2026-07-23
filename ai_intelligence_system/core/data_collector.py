@@ -40,6 +40,9 @@ class DataCollector:
         self._skip_empty_sources = skip_empty_sources
         self._incremental = incremental
         self._history = history_store or CrawlHistoryStore()
+        logger.info("DataCollector 初始化: 源={} max_items={} fetch_detail={} detail_concurrency={} incremental={}",
+                     self._source_ids, self._max_items_per_source, self._fetch_detail,
+                     self._detail_concurrency, self._incremental)
 
     def collect(
         self,
@@ -59,9 +62,13 @@ class DataCollector:
         start_date: date | None = None,
         end_date: date | None = None,
     ) -> list[NewsItem]:
+        logger.info("=" * 60)
+        logger.info("[步骤1] 解析日期范围: days={} start_date={} end_date={}", days, start_date, end_date)
         start, end = self._history.resolve_range(
             days=days, start=start_date, end=end_date
         )
+        logger.info("[步骤1] 日期范围: {} ~ {}", start, end)
+        logger.info("[步骤2] 创建爬虫实例: source_ids={}", self._source_ids)
         crawlers = create_many(
             self._source_ids,
             timeout_sec=self._timeout_sec,
@@ -71,12 +78,13 @@ class DataCollector:
             history_store=self._history,
             incremental=self._incremental,
         )
+        logger.info("[步骤2] 创建爬虫数量: {} 个", len(crawlers))
         if not crawlers:
             logger.warning("无可用爬虫，已注册: {}", list_registered())
             return []
 
         logger.info(
-            "采集任务：源={} 日期={} ~ {} incremental={}",
+            "[步骤3] 采集任务开始：源={} 日期={} ~ {} incremental={}",
             [c.source_id for c in crawlers],
             start,
             end,
@@ -84,22 +92,28 @@ class DataCollector:
         )
 
         headers = BaseCrawler.default_headers
+        logger.info("[步骤4] 创建 HTTP 客户端: timeout={}s", self._timeout_sec)
         async with httpx.AsyncClient(
             headers=headers,
             follow_redirects=True,
             timeout=httpx.Timeout(self._timeout_sec),
         ) as client:
+            logger.info("[步骤5] 并行启动 {} 个爬虫任务", len(crawlers))
             tasks = [
                 self._run_one(client, crawler, start, end) for crawler in crawlers
             ]
             batches = await asyncio.gather(*tasks)
+            logger.info("[步骤5] 所有爬虫任务完成, 各源返回: {}", 
+                         {crawlers[i].source_id: len(batch) for i, batch in enumerate(batches)})
 
         merged: list[NewsItem] = []
         for batch in batches:
             merged.extend(batch)
 
+        logger.info("[步骤6] 去重前共 {} 条新闻", len(merged))
         deduped = self._deduplicate(merged)
-        logger.info("采集完成：原始 {} 条，去重后 {} 条", len(merged), len(deduped))
+        logger.info("[步骤7] 采集完成：原始 {} 条，去重后 {} 条", len(merged), len(deduped))
+        logger.info("=" * 60)
         return deduped
 
     async def _run_one(
@@ -110,36 +124,44 @@ class DataCollector:
         end: date,
     ) -> list[NewsItem]:
         sid = crawler.source_id
+        logger.info("--- [{}] 开始爬取 ---", sid)
         try:
             if self._incremental and not hasattr(crawler, "_force_range"):
+                logger.info("[{}] 增量模式: 查询待抓取日期 {} ~ {}", sid, start, end)
                 pending = self._history.pending_dates(sid, start, end, incremental=True)
+                logger.info("[{}] 待抓取日期: {} 天 = {}", sid, len(pending), pending)
                 if not pending:
-                    logger.info("爬虫 {} 无新增日期可抓", sid)
+                    logger.info("[{}] 无新增日期可抓, 跳过", sid)
                     return []
                 run_start, run_end = pending[0], pending[-1]
+                logger.info("[{}] 实际抓取范围: {} ~ {}", sid, run_start, run_end)
             else:
                 pending = None
                 run_start, run_end = start, end
+                logger.info("[{}] 非增量模式: 直接抓取 {} ~ {}", sid, run_start, run_end)
 
+            logger.info("[{}] 调用 fetch_by_date: {} ~ {}", sid, run_start, run_end)
             items = await crawler.fetch_by_date(client, run_start, run_end)
+            logger.info("[{}] fetch_by_date 返回 {} 条新闻", sid, len(items))
 
             if self._incremental:
                 dates_to_mark = pending if pending else self._history.pending_dates(
                     sid, start, end, incremental=False
                 )
                 if dates_to_mark:
+                    logger.info("[{}] 标记 {} 个日期为已完成: {}", sid, len(dates_to_mark), dates_to_mark)
                     self._history.mark_dates_completed(sid, dates_to_mark)
 
             if not items and self._skip_empty_sources:
-                logger.warning("爬虫 {} 未返回数据", sid)
+                logger.warning("[{}] 爬虫未返回数据", sid)
             else:
-                logger.info("爬虫 {} 返回 {} 条", sid, len(items))
+                logger.info("[{}] 爬虫最终返回 {} 条", sid, len(items))
             return items
         except CrawlerError as exc:
-            logger.error("爬虫 {} 失败: {}", sid, exc)
+            logger.error("[{}] 爬虫业务异常: {}", sid, exc)
             return []
         except Exception as exc:  # noqa: BLE001
-            logger.exception("爬虫 {} 异常: {}", sid, exc)
+            logger.exception("[{}] 爬虫未预期异常: {}", sid, exc)
             return []
 
     @staticmethod

@@ -62,7 +62,9 @@ class CrawlHistoryStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
 
     def load(self) -> CrawlHistoryFile:
+        logger.debug("加载 crawl_history: {}", self._path)
         if not self._path.exists():
+            logger.info("crawl_history 文件不存在: {}，返回空记录", self._path)
             return CrawlHistoryFile()
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
@@ -73,7 +75,11 @@ class CrawlHistoryStore:
                     completed_dates=list(rec.get("completed_dates") or []),
                     last_run_at=rec.get("last_run_at"),
                 )
-            return CrawlHistoryFile(version=int(raw.get("version") or 1), sources=sources)
+            result = CrawlHistoryFile(version=int(raw.get("version") or 1), sources=sources)
+            logger.debug("crawl_history 加载成功: {} 个源, 各源日期数={}", 
+                         len(result.sources),
+                         {sid: len(r.completed_dates) for sid, r in result.sources.items()})
+            return result
         except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
             logger.warning("读取 crawl_history 失败，将使用空记录: {}", exc)
             return CrawlHistoryFile()
@@ -112,10 +118,16 @@ class CrawlHistoryStore:
     ) -> list[date]:
         """返回尚未标记完成的日期列表（升序）。"""
         all_days = iter_dates(start, end)
+        logger.debug("pending_dates: source={} 总日期范围={}~{} 共{}天 incremental={}",
+                     source_id, start, end, len(all_days), incremental)
         if not incremental:
+            logger.info("pending_dates [{}]: 非增量模式，返回全部 {} 天", source_id, len(all_days))
             return all_days
         done = self.get_record(source_id).completed_set()
-        return [d for d in all_days if _date_str(d) not in done]
+        pending = [d for d in all_days if _date_str(d) not in done]
+        logger.info("pending_dates [{}]: 总{}天, 已完成{}天, 待抓取{}天 = {}",
+                    source_id, len(all_days), len(done), len(pending), pending)
+        return pending
 
     def mark_dates_completed(
         self,
@@ -144,6 +156,9 @@ class CrawlHistoryStore:
     ) -> tuple[date, date]:
         end_d = end or _today()
         if start is not None:
+            logger.info("resolve_range: 指定范围 {} ~ {}", start, end_d)
             return start, end_d
         lookback = max(1, days or 7)
-        return end_d - timedelta(days=lookback - 1), end_d
+        result = (end_d - timedelta(days=lookback - 1), end_d)
+        logger.info("resolve_range: days={} 计算范围 {} ~ {}", days, result[0], result[1])
+        return result

@@ -248,7 +248,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("行业情报系统 v1.0")
+        self.setWindowTitle("行业情报系统 v2.2")
         icon_path = app_icon_path()
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
@@ -383,6 +383,7 @@ class MainWindow(QMainWindow):
 
     def _build_tabs(self) -> None:
         self._tabs = QTabWidget()
+        self._tabs.setDocumentMode(True)
         self.setCentralWidget(self._tabs)
 
         self._tab_dashboard = QWidget()
@@ -662,13 +663,13 @@ class MainWindow(QMainWindow):
 
         crawl_body = QWidget()
         crawl_body_layout = QVBoxLayout(crawl_body)
-        crawl_body_layout.setContentsMargins(16, 12, 16, 16)
-        crawl_body_layout.setSpacing(10)
+        crawl_body_layout.setContentsMargins(20, 16, 20, 20)
+        crawl_body_layout.setSpacing(12)
 
         crawl_toolbar = QWidget()
         crawl_toolbar.setObjectName("FilterBar")
         crawl_toolbar_layout = QHBoxLayout(crawl_toolbar)
-        crawl_toolbar_layout.setContentsMargins(10, 7, 10, 7)
+        crawl_toolbar_layout.setContentsMargins(10, 8, 10, 8)
         crawl_toolbar_layout.setSpacing(10)
 
         crawl_days_label = QLabel("采集天数")
@@ -687,7 +688,7 @@ class MainWindow(QMainWindow):
         self._btn_start_crawl = QPushButton("采集")
         self._btn_start_crawl.setObjectName("PrimaryBtn")
         self._btn_start_crawl.setIcon(self._std_icon(QStyle.SP_BrowserReload))
-        self._btn_start_crawl.setMinimumWidth(96)
+        self._btn_start_crawl.setMinimumWidth(100)
         self._btn_start_crawl.clicked.connect(self._run_crawl_pipeline_async)
 
         crawl_toolbar_layout.addWidget(crawl_days_label)
@@ -706,7 +707,7 @@ class MainWindow(QMainWindow):
         self._crawl_log_view = QTextBrowser()
         self._crawl_log_view.setObjectName("LogConsole")
         self._crawl_log_view.setOpenExternalLinks(True)
-        self._crawl_log_view.setMinimumHeight(180)
+        self._crawl_log_view.setMinimumHeight(200)
         self._crawl_log_view.setPlaceholderText("爬取日志将在这里实时显示…")
         crawl_body_layout.addWidget(self._crawl_log_view, stretch=1)
 
@@ -742,14 +743,14 @@ class MainWindow(QMainWindow):
 
         news_body = QWidget()
         news_body_layout = QVBoxLayout(news_body)
-        news_body_layout.setContentsMargins(16, 10, 16, 14)
-        news_body_layout.setSpacing(8)
+        news_body_layout.setContentsMargins(20, 16, 20, 20)
+        news_body_layout.setSpacing(12)
 
         # Filter row
         news_filter_bar = QWidget()
         news_filter_bar.setObjectName("FilterBar")
         news_filter_layout = QHBoxLayout(news_filter_bar)
-        news_filter_layout.setContentsMargins(10, 6, 10, 6)
+        news_filter_layout.setContentsMargins(10, 8, 10, 8)
         news_filter_layout.setSpacing(8)
 
         source_label = QLabel("来源")
@@ -771,7 +772,7 @@ class MainWindow(QMainWindow):
         self._btn_news_refresh = QPushButton("刷新")
         self._btn_news_refresh.setObjectName("PrimaryBtn")
         self._btn_news_refresh.setIcon(self._std_icon(QStyle.SP_BrowserReload))
-        self._btn_news_refresh.setMinimumWidth(72)
+        self._btn_news_refresh.setMinimumWidth(100)
         self._btn_news_refresh.clicked.connect(self.refresh_news_async)
         self._news_source_filter.currentIndexChanged.connect(lambda _idx: self.refresh_news_async())
         self._news_days_filter.valueChanged.connect(lambda _value: self.refresh_news_async())
@@ -789,7 +790,7 @@ class MainWindow(QMainWindow):
         news_del_bar = QWidget()
         news_del_bar.setObjectName("DeleteBar")
         news_del_layout = QHBoxLayout(news_del_bar)
-        news_del_layout.setContentsMargins(10, 5, 10, 5)
+        news_del_layout.setContentsMargins(10, 8, 10, 8)
         news_del_layout.setSpacing(8)
 
         self._btn_news_delete_loaded = QPushButton("清空列表")
@@ -858,9 +859,9 @@ class MainWindow(QMainWindow):
 
         top_splitter.addWidget(crawl_group)
         top_splitter.addWidget(news_group)
-        top_splitter.setStretchFactor(0, 2)
+        top_splitter.setStretchFactor(0, 3)
         top_splitter.setStretchFactor(1, 5)
-        top_splitter.setSizes([400, 900])
+        top_splitter.setSizes([440, 760])
         main_splitter.addWidget(top_splitter)
 
         # ── AI Analysis Panel ──
@@ -892,13 +893,13 @@ class MainWindow(QMainWindow):
 
         ai_body = QWidget()
         ai_body_layout = QVBoxLayout(ai_body)
-        ai_body_layout.setContentsMargins(16, 10, 16, 14)
-        ai_body_layout.setSpacing(10)
+        ai_body_layout.setContentsMargins(20, 16, 20, 20)
+        ai_body_layout.setSpacing(12)
 
         ai_toolbar = QWidget()
         ai_toolbar.setObjectName("FilterBar")
         ai_toolbar_layout = QHBoxLayout(ai_toolbar)
-        ai_toolbar_layout.setContentsMargins(10, 6, 10, 6)
+        ai_toolbar_layout.setContentsMargins(10, 8, 10, 8)
         ai_toolbar_layout.setSpacing(10)
 
         range_lbl = QLabel("分析范围")
@@ -912,7 +913,7 @@ class MainWindow(QMainWindow):
         self._btn_run_ai = QPushButton("执行分析")
         self._btn_run_ai.setObjectName("SuccessBtn")
         self._btn_run_ai.setIcon(self._std_icon(QStyle.SP_MediaPlay))
-        self._btn_run_ai.setMinimumWidth(96)
+        self._btn_run_ai.setMinimumWidth(100)
         self._btn_run_ai.clicked.connect(self._run_manual_analysis_async)
 
         ai_toolbar_layout.addWidget(range_lbl)
@@ -928,7 +929,7 @@ class MainWindow(QMainWindow):
         self._manual_extra = QTextEdit()
         self._manual_extra.setObjectName("PromptInput")
         self._manual_extra.setPlaceholderText("输入额外的分析说明或约束条件，留空则使用默认 Prompt…")
-        self._manual_extra.setFixedHeight(60)
+        self._manual_extra.setFixedHeight(64)
         ai_body_layout.addWidget(self._manual_extra)
 
         output_label = QLabel("分析输出")
@@ -938,7 +939,7 @@ class MainWindow(QMainWindow):
         self._manual_output = QPlainTextEdit()
         self._manual_output.setObjectName("OutputConsole")
         self._manual_output.setReadOnly(True)
-        self._manual_output.setMinimumHeight(120)
+        self._manual_output.setMinimumHeight(140)
         self._manual_output.setPlaceholderText("分析结果将在这里输出…")
         ai_body_layout.addWidget(self._manual_output, stretch=1)
 
@@ -947,7 +948,7 @@ class MainWindow(QMainWindow):
         main_splitter.addWidget(analysis_group)
         main_splitter.setStretchFactor(0, 3)
         main_splitter.setStretchFactor(1, 2)
-        main_splitter.setSizes([560, 320])
+        main_splitter.setSizes([600, 280])
 
         content_layout.addWidget(main_splitter, stretch=1)
         scroll.setWidget(content)
@@ -2354,7 +2355,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "关于",
-            "行业情报系统 v1.0\n"
+            "行业情报系统 v2.2\n"
             "Author：林峰\n\n"
             "Python + PySide6 + SQLite + DeepSeek\n\n"
             "免责声明：\n"
