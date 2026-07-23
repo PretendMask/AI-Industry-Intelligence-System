@@ -5,7 +5,7 @@
 
 **Windows 一键安装程序（推荐）**
 
-[![Download v2.1](https://img.shields.io/badge/Download-v2.1-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/PretendMask/AI-Industry-Intelligence-System/releases/download/v2.1.0/Industry-Intelligence-Setup-v2.1.exe)
+[![Download v2.1](https://img.shields.io/badge/Download-v2.2-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/PretendMask/AI-Industry-Intelligence-System/releases/download/v2.2.0/Industry-Intelligence-Setup-v2.2.exe)
 
 > 文件大小 ≈ 43 MB｜支持 Windows 10/11
 ## 📸 界面预览
