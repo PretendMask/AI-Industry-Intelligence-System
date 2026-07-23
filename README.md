@@ -11,7 +11,7 @@
 ## 📸 界面预览
 
 ### 仪表盘
-![仪表盘](screenshots/1-dashboard.png)
+![仪表盘](screenshots/1-analyze.png)
 
 ### 统计分析
 ![统计分析](screenshots/1-statistics.png)
