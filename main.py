@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ctypes
 import sys
 from pathlib import Path
 
@@ -17,12 +16,11 @@ from PySide6.QtWidgets import QApplication
 from ai_intelligence_system.main_window import MainWindow
 from ai_intelligence_system.utils.paths import app_icon_path
 
-
-def _set_windows_app_user_model_id() -> None:
-    if sys.platform != "win32":
-        return
-    app_id = "AIIndustryIntelligence.System.Desktop.1"
-    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+# 注意：这里刻意不调用 SetCurrentProcessExplicitAppUserModelID。
+# 当进程设置了 AppUserModelID、但系统中没有带相同 ID 的快捷方式(.lnk)时，
+# Windows 任务栏按钮图标会回退到 exe 图标（即 python.exe 的 Python 徽标），
+# 而不是 setWindowIcon 设置的窗口图标——表现为"任务栏没有程序图标"。
+# 去掉该调用后，任务栏按钮直接使用窗口图标（ico.ico）。
 
 
 def _load_app_icon() -> QIcon:
@@ -33,8 +31,6 @@ def _load_app_icon() -> QIcon:
 
 
 def main() -> None:
-    _set_windows_app_user_model_id()
-
     app = QApplication(sys.argv)
     app.setApplicationName("行业情报系统")
     app.setStyle("Fusion")
@@ -47,6 +43,9 @@ def main() -> None:
     if not icon.isNull():
         window.setWindowIcon(icon)
     window.show()
+    if not icon.isNull():
+        # show 之后再设置一次窗口图标，覆盖任务栏按钮创建的时序差异
+        window.setWindowIcon(icon)
     raise SystemExit(app.exec())
 
 

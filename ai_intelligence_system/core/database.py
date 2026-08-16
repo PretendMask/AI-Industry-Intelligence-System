@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 import json
 import threading
 
@@ -152,6 +152,31 @@ def list_recent_news(
         stmt = stmt.where(
             (NewsRecord.publish_time >= cutoff) | (NewsRecord.publish_time == None)
         )
+    if source and source != "全部":
+        stmt = stmt.where(NewsRecord.source == source)
+    stmt = stmt.order_by(NewsRecord.publish_time.desc().nullslast(), NewsRecord.crawled_at.desc()).limit(limit)
+    return list(session.scalars(stmt).all())
+
+
+def list_news_by_date_range(
+    session: Session,
+    *,
+    start_date: date,
+    end_date: date,
+    source: str | None = None,
+    limit: int = 500,
+) -> list[NewsRecord]:
+    """按绝对日期区间查询新闻（含两端当天，publish_time 为空的历史记录仍展示）。"""
+    if start_date > end_date:
+        return []
+    start_dt = datetime.combine(start_date, time.min)
+    end_dt = datetime.combine(end_date, time.max)
+    stmt = select(NewsRecord)
+    stmt = stmt.where(
+        (NewsRecord.publish_time >= start_dt)
+        & (NewsRecord.publish_time <= end_dt)
+        | (NewsRecord.publish_time == None)
+    )
     if source and source != "全部":
         stmt = stmt.where(NewsRecord.source == source)
     stmt = stmt.order_by(NewsRecord.publish_time.desc().nullslast(), NewsRecord.crawled_at.desc()).limit(limit)

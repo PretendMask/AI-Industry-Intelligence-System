@@ -30,7 +30,7 @@ DEFAULT_SYSTEM_PROMPT = """你是资深新能源、电力与人工智能产业�
 确保 score 为整数，JSON 可被标准库 json.loads 解析。"""
 
 
-TimeRange = Literal["24h", "3d", "7d"]
+TimeRange = Literal["24h", "3d", "7d", "15d", "30d"]
 
 
 def utc_now() -> datetime:
@@ -42,7 +42,24 @@ def time_range_label(tr: TimeRange) -> str:
         return "最近 24 小时"
     if tr == "3d":
         return "最近 3 天"
-    return "最近 7 天"
+    if tr == "7d":
+        return "最近 7 天"
+    if tr == "15d":
+        return "最近 15 天"
+    return "最近 30 天"
+
+
+def days_to_time_range(days: int) -> TimeRange:
+    """将“最近 N 天”映射到受支持的分析时间窗口标签，避免 15/30 天被误标成 7 天。"""
+    if days <= 1:
+        return "24h"
+    if days <= 3:
+        return "3d"
+    if days <= 7:
+        return "7d"
+    if days <= 15:
+        return "15d"
+    return "30d"
 
 
 def build_user_prompt(
@@ -56,8 +73,12 @@ def build_user_prompt(
         window_start = start - timedelta(hours=24)
     elif time_range == "3d":
         window_start = start - timedelta(days=3)
-    else:
+    elif time_range == "7d":
         window_start = start - timedelta(days=7)
+    elif time_range == "15d":
+        window_start = start - timedelta(days=15)
+    else:
+        window_start = start - timedelta(days=30)
 
     kw = "、".join(keywords) if keywords else "新能源、电力、人工智能产业链"
     base = (
@@ -71,11 +92,25 @@ def build_user_prompt(
 
 
 def parse_analysis_json(text: str) -> dict[str, Any]:
-    """从模型返回文本中提取 JSON（容错去除 ```json 围栏）。"""
+    """从模型返回文本中提取 JSON。
+
+    容错策略（逐级降级）：
+    1. 全文是 ```json 围栏 → 剥围栏后解析；
+    2. 文本前后带说明文字 → 从每个 `{` 处尝试 raw_decode，命中即返回；
+    3. 仍失败 → 交由 json.loads 抛出原始 JSONDecodeError。
+    """
     raw = text.strip()
     fence = re.match(r"^```(?:json)?\s*([\s\S]*?)\s*```$", raw, re.IGNORECASE)
     if fence:
         raw = fence.group(1).strip()
+    else:
+        pos = raw.find("{")
+        while pos >= 0:
+            try:
+                obj, _ = json.JSONDecoder().raw_decode(raw[pos:])
+                return obj
+            except json.JSONDecodeError:
+                pos = raw.find("{", pos + 1)
     return json.loads(raw)
 
 

@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QFont
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QUrl, Signal
+from PySide6.QtGui import (
+    QColor,
+    QDesktopServices,
+    QFont,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QWidget,
     QDialog,
     QHBoxLayout,
     QHeaderView,
@@ -76,9 +86,9 @@ class NewsTableWidget(QTableWidget):
     def reset_delete_buttons(self) -> None:
         for row in range(self.rowCount()):
             widget = self.cellWidget(row, 5)
-            if isinstance(widget, QPushButton):
-                widget.setEnabled(True)
-                widget.setText("删除")
+            button = widget.findChild(QPushButton) if widget is not None else None
+            if button is not None:
+                button.setEnabled(True)
 
     def _render_rows(self) -> int:
         self.setUpdatesEnabled(False)
@@ -128,15 +138,22 @@ class NewsTableWidget(QTableWidget):
         detail_btn.setProperty("news_title", title)
         detail_btn.setProperty("news_summary", summary)
         detail_btn.clicked.connect(self._show_summary_dialog)
-        self.setCellWidget(row, 4, detail_btn)
+        self.setCellWidget(row, 4, self._centered_widget(detail_btn))
 
-        delete_btn = QPushButton("删除")
-        delete_btn.setObjectName("DangerButton")
-        delete_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogDiscardButton))
+        delete_btn = QPushButton()
+        delete_btn.setObjectName("DangerIconButton")
+        trash_icon = QIcon()
+        trash_icon.addPixmap(self._trash_pixmap("#94A3B8"), QIcon.Normal)
+        trash_icon.addPixmap(self._trash_pixmap("#DC2626"), QIcon.Active)
+        delete_btn.setIcon(trash_icon)
+        delete_btn.setIconSize(QSize(16, 16))
+        delete_btn.setFixedSize(30, 30)
+        delete_btn.setToolTip("删除")
+        delete_btn.setCursor(Qt.PointingHandCursor)
         delete_btn.setProperty("news_id", item.get("id"))
         delete_btn.setProperty("news_title", title)
         delete_btn.clicked.connect(self._emit_delete_request)
-        self.setCellWidget(row, 5, delete_btn)
+        self.setCellWidget(row, 5, self._centered_widget(delete_btn))
 
     def _open_link_if_title_clicked(self, row: int, column: int) -> None:
         if column != 0:
@@ -187,8 +204,46 @@ class NewsTableWidget(QTableWidget):
             return
         title = str(button.property("news_title") or "未命名新闻")
         button.setEnabled(False)
-        button.setText("删除中…")
+        button.setToolTip("删除中…")
         self.delete_requested.emit(news_id, title)
+
+    @staticmethod
+    def _centered_widget(child: QWidget) -> QWidget:
+        """把子控件包进填满单元格的容器，实现单元格内居中。"""
+        container = QWidget()
+        container.setObjectName("CellCenterContainer")
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(child, 0, Qt.AlignCenter)
+        return container
+
+    @staticmethod
+    def _trash_pixmap(color: str, size: int = 16) -> QPixmap:
+        """用 QPainter 绘制线条风垃圾桶图标（不依赖字体/emoji）。"""
+        pm = QPixmap(size, size)
+        pm.fill(Qt.transparent)
+        painter = QPainter(pm)
+        painter.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor(color))
+        pen.setWidthF(max(1.0, size * 0.09))
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        s = float(size)
+        painter.drawRoundedRect(
+            QRectF(s * 0.34, s * 0.10, s * 0.32, s * 0.16), s * 0.04, s * 0.04
+        )
+        painter.drawLine(QPointF(s * 0.12, s * 0.30), QPointF(s * 0.88, s * 0.30))
+        path = QPainterPath()
+        path.moveTo(s * 0.18, s * 0.36)
+        path.lineTo(s * 0.82, s * 0.36)
+        path.lineTo(s * 0.73, s * 0.90)
+        path.lineTo(s * 0.27, s * 0.90)
+        path.closeSubpath()
+        painter.drawPath(path)
+        painter.end()
+        return pm
 
     @staticmethod
     def _ellipsize(text: str, limit: int) -> str:

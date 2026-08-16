@@ -46,16 +46,18 @@ def build_crawl_user_prompt(
     keywords: list[str],
     time_range: TimeRange,
     extra_instruction: str = "",
+    max_items: int = 30,
 ) -> str:
     kw = "、".join(keywords) if keywords else "新能源、电力、人工智能产业链"
     window = analyzer.time_range_label(time_range)
+    actual = min(len(items), max_items)
     base = (
         f"关注关键词：{kw}。\n"
         f"分析时间窗口：{window}。\n"
-        f"共提供 {len(items)} 条爬虫抓取的新闻条目（见 news_items）。\n"
+        f"共提供 {actual} 条爬虫抓取的新闻条目（见 news_items，超过 {max_items} 条时截断）。\n"
         "请输出符合系统提示约束的 JSON。\n\n"
         "news_items:\n"
-        f"{build_news_context(items)}"
+        f"{build_news_context(items, max_items=max_items)}"
     )
     if extra_instruction.strip():
         base += "\n\n用户补充要求：\n" + extra_instruction.strip()
@@ -87,7 +89,7 @@ class AiAnalyzer:
         if not items:
             raise ValueError("无可分析的新闻数据：请先运行数据采集")
 
-        tr = time_range if time_range in ("24h", "3d", "7d") else "24h"
+        tr = time_range if time_range in ("24h", "3d", "7d", "15d", "30d") else "24h"
         user_msg = build_crawl_user_prompt(
             items=items,
             keywords=keywords,

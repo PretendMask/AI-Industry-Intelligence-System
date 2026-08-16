@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any
@@ -55,6 +56,66 @@ class NewsItem:
             "content": (self.content or self.title)[:4000],
             "metadata": self.metadata,
         }
+
+
+def _parse_publish_date(publish_time: str | None) -> date | None:
+    """从爬虫产出的发布时间字符串解析日期（兼容 YYYY-MM-DD 与中文/斜杠格式）。"""
+    if not publish_time:
+        return None
+    try:
+        return date.fromisoformat(publish_time[:10])
+    except ValueError:
+        pass
+    m = re.search(r"(\d{4})[年./-](\d{1,2})[月./-](\d{1,2})", publish_time)
+    if m:
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return None
+    return None
+
+
+def infer_covered_dates(
+    items: list[NewsItem],
+    start: date,
+    end: date,
+) -> list[date]:
+    """从返回条目的发布时间反推实际覆盖的日期（与 [start, end] 取交集，升序）。"""
+    covered: set[date] = set()
+    for it in items:
+        d = _parse_publish_date(it.publish_time)
+        if d is not None and start <= d <= end:
+            covered.add(d)
+    return sorted(covered)
+
+
+def resolve_dates_to_mark(
+    source_id: str,
+    items: list[NewsItem],
+    pending: list[date],
+    run_start: date,
+    run_end: date,
+) -> list[date]:
+    """决定增量模式下应标记为“已完成”的日期列表。
+
+    - 空结果：不标记任何日期，保留重试机会（修复：此前会把整个窗口标完成导致数据永久丢失）；
+    - 有数据且能反推日期：只标记实际有数据的日期（少结果时不再误标全部）；
+    - 有数据但全部无法反推日期：回退标记全部 pending，避免无限重试。
+    """
+    if not items:
+        logger.warning("[{}] 空结果：本次不标记任何日期为已完成，保留重试机会", source_id)
+        return []
+    covered = infer_covered_dates(items, run_start, run_end)
+    if covered:
+        skipped = [d for d in pending if d not in set(covered)]
+        if skipped:
+            logger.warning(
+                "[{}] 返回 {} 条新闻，仅覆盖 {} 个日期（{}），以下日期暂不标记，下次将重试: {}",
+                source_id, len(items), len(covered), covered, skipped,
+            )
+        return covered
+    logger.warning("[{}] 有数据但无法反推发布时间，回退标记全部 {} 个日期", source_id, len(pending))
+    return pending
 
 
 class BaseCrawler(abc.ABC):
@@ -128,8 +189,10 @@ class BaseCrawler(abc.ABC):
             return []
         p_start, p_end = pending[0], pending[-1]
         items = await self.fetch_by_date(client, p_start, p_end)
-        self._history.mark_dates_completed(self.source_id, pending)
-        self._last_crawled_dates = pending
+        dates_to_mark = resolve_dates_to_mark(self.source_id, items, pending, p_start, p_end)
+        if dates_to_mark:
+            self._history.mark_dates_completed(self.source_id, dates_to_mark)
+        self._last_crawled_dates = dates_to_mark
         return self.trim_items(items)
 
     async def fetch_text(

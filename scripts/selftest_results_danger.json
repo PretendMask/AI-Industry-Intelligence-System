@@ -1,0 +1,296 @@
+{
+  "pass": 58,
+  "fail": 0,
+  "results": [
+    [
+      "等待真实记录加载",
+      true,
+      ""
+    ],
+    [
+      "等待真实新闻加载",
+      true,
+      ""
+    ],
+    [
+      "备份已就绪(DB)",
+      true,
+      "C:\\Users\\16500\\Desktop\\AI行业情报系统v2.2\\AI-Industry-Intelligence-System\\scripts\\_backup"
+    ],
+    [
+      "备份已就绪(config)",
+      true,
+      "C:\\Users\\16500\\Desktop\\AI行业情报系统v2.2\\AI-Industry-Intelligence-System\\config\\config.json"
+    ],
+    [
+      "点击后按钮进入测试中",
+      true,
+      ""
+    ],
+    [
+      "测试连接成功",
+      true,
+      "已连通 DeepSeek，模型回复：正常"
+    ],
+    [
+      "按钮恢复可用",
+      true,
+      "测试连接"
+    ],
+    [
+      "测试邮件发送成功",
+      true,
+      "email_count=1"
+    ],
+    [
+      "邮件结果弹窗已记录",
+      true,
+      "成功"
+    ],
+    [
+      "点击后按钮禁用",
+      true,
+      ""
+    ],
+    [
+      "保存完成且文件已重写",
+      true,
+      "mtime 1786816055.117209 -> 1786816059.3481498"
+    ],
+    [
+      "重载配置一致(模型)",
+      true,
+      "deepseek-v4-flash"
+    ],
+    [
+      "重载配置一致(库路径)",
+      true,
+      "D:\\project\\AI-Industry-Intelligence-System\\data\\intelligence.db"
+    ],
+    [
+      "保存成功弹窗已记录",
+      true,
+      "设置已写入 config/config.json（API Key、SMTP 密码等为加密存储）。"
+    ],
+    [
+      "点击后按钮禁用",
+      true,
+      ""
+    ],
+    [
+      "爬取状态标签已更新",
+      true,
+      "等待开始爬取"
+    ],
+    [
+      "爬取流程完成",
+      true,
+      "连接网站:成功 ｜ 请求新闻列表:成功 ｜ 解析新闻内容:成功 ｜ 写入数据库:等待 ｜ 爬取完成:成功 ｜ 写入SQLite数据库:成功"
+    ],
+    [
+      "爬取摘要已更新",
+      true,
+      "本次新增 0 条  ·  爬取完成  · 详见实时日志"
+    ],
+    [
+      "数据库新闻数未减少",
+      true,
+      "67 -> 67"
+    ],
+    [
+      "爬取失败弹窗未出现",
+      true,
+      ""
+    ],
+    [
+      "找到行内删除按钮",
+      true,
+      ""
+    ],
+    [
+      "行内删除后列表减一",
+      true,
+      "30 -> 29"
+    ],
+    [
+      "数据库实际减一",
+      true,
+      "67 -> 66"
+    ],
+    [
+      "刷新后共 179 条",
+      true,
+      "rows=179"
+    ],
+    [
+      "表格渲染 120 条",
+      true,
+      "120"
+    ],
+    [
+      "分页提示 120/total",
+      true,
+      "显示 120 / 179 条"
+    ],
+    [
+      "加载更多按钮可用",
+      true,
+      "True"
+    ],
+    [
+      "行内详情对话框已打开",
+      true,
+      ""
+    ],
+    [
+      "加载更多后渲染全部",
+      true,
+      "179"
+    ],
+    [
+      "加载更多后分页提示",
+      true,
+      "显示 179 / 179 条"
+    ],
+    [
+      "加载更多后按钮禁用",
+      true,
+      "False"
+    ],
+    [
+      "来源筛选含自测来源",
+      true,
+      ""
+    ],
+    [
+      "筛选后仅合成 150 条",
+      true,
+      "150"
+    ],
+    [
+      "区间删除后列表为空",
+      true,
+      "rows=0"
+    ],
+    [
+      "数据库减 150 条",
+      true,
+      "216 -> 66"
+    ],
+    [
+      "删除完成弹窗已记录",
+      true,
+      "已删除 150 条新闻。"
+    ],
+    [
+      "切回全部后新闻恢复",
+      true,
+      "rows=29"
+    ],
+    [
+      "点击后按钮禁用",
+      true,
+      ""
+    ],
+    [
+      "AI 分析成功",
+      true,
+      "结果键=['analysis', 'impact', 'related', 'score', 'score_note', 'source', 'source_url', 'stage']"
+    ],
+    [
+      "输出为 JSON",
+      true,
+      "{\n  \"analysis\": \"一、政策层面：国家层面密集部署新能源与电力安全\\n工业和信息化部部长李乐成赴青海、甘肃"
+    ],
+    [
+      "已写入 intelligence_records",
+      true,
+      "1 -> 2"
+    ],
+    [
+      "清空后列表为空",
+      true,
+      "rows=0"
+    ],
+    [
+      "数据库按列表数量减少",
+      true,
+      "66 -> 37 (loaded=29)"
+    ],
+    [
+      "批量删除按钮已禁用",
+      true,
+      "False"
+    ],
+    [
+      "CSV 文件已生成",
+      true,
+      "C:\\Users\\16500\\Desktop\\AI行业情报系统v2.2\\AI-Industry-Intelligence-System\\scripts\\_out_export.csv"
+    ],
+    [
+      "CSV 表头正确",
+      true,
+      "id,timestamp,title,source,source_url,summary,impact,score,stage,tags"
+    ],
+    [
+      "CSV 含数据行",
+      true,
+      "lines=3"
+    ],
+    [
+      "找到导出日志按钮",
+      true,
+      ""
+    ],
+    [
+      "日志文件已生成",
+      true,
+      "C:\\Users\\16500\\Desktop\\AI行业情报系统v2.2\\AI-Industry-Intelligence-System\\scripts\\_out_logs.csv"
+    ],
+    [
+      "日志表头正确",
+      true,
+      "time,level,source,module,message,thread,raw"
+    ],
+    [
+      "找到清空日志按钮",
+      true,
+      ""
+    ],
+    [
+      "清空后日志缓存为空",
+      true,
+      "59 -> 0"
+    ],
+    [
+      "表格已清空",
+      true,
+      "0"
+    ],
+    [
+      "清空提示已显示",
+      true,
+      "当前 UI 日志缓存已清空。"
+    ],
+    [
+      "找到显示设置按钮",
+      true,
+      ""
+    ],
+    [
+      "显示设置对话框已打开",
+      true,
+      "['新闻摘要详情', '显示设置']"
+    ],
+    [
+      "关于弹窗已记录",
+      true,
+      "行业情报系统 v2.2\nAuthor：林峰\n\nPython + PySide6 + SQLite + DeepSeek\n"
+    ],
+    [
+      "窗口已关闭",
+      true,
+      "False"
+    ]
+  ]
+}

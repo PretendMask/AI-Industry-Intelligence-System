@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
@@ -13,6 +14,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from ai_intelligence_system.config.settings import AppSettings
 from ai_intelligence_system.core import analyzer
 from ai_intelligence_system.core.ai_analyzer import AiAnalyzer
+from ai_intelligence_system.core.ai_client import DeepSeekClient
 from ai_intelligence_system.core.analyzer import TimeRange
 from ai_intelligence_system.core.data_collector import DataCollector
 from ai_intelligence_system.core.crawler_factory import create_many
@@ -53,6 +55,7 @@ class CrawlPipelineWorker(QObject):
                 source_ids=source_ids,
                 max_items_per_source=self._settings.crawl_max_items_per_source,
                 incremental=True,
+                progress_cb=self._on_collect_progress,
             )
             items = collector.collect(days=self._days)
             for item in items[:50]:
@@ -90,6 +93,30 @@ class CrawlPipelineWorker(QObject):
         self.log_line.emit(line)
         self.step_changed.emit(name, status, detail)
 
+    def _on_collect_progress(self, msg: str) -> None:
+        """DataCollector 实时进度回调：让 UI 在长网络等待期间持续收到更新。"""
+        self._emit_step("请求新闻列表", "进行中", msg)
+
+
+def _with_heartbeat(emit, label: str, fn, interval: float = 10):
+    """执行 fn（可能长时间阻塞）期间每隔 interval 秒通过 emit 上报一次心跳。"""
+    started = time.monotonic()
+    emit(f"已提交{label}请求，等待响应…")
+    stop = threading.Event()
+
+    def _beat() -> None:
+        while not stop.wait(interval):
+            emit(f"正在等待{label}响应… 已等待 {int(time.monotonic() - started)} 秒")
+
+    th = threading.Thread(target=_beat, daemon=True)
+    th.start()
+    try:
+        result = fn()
+    finally:
+        stop.set()
+    emit(f"{label}响应完成，耗时 {int(time.monotonic() - started)} 秒。")
+    return result
+
 
 class NewsLoadWorker(QObject):
     """从 SQLite 加载新闻展示表。"""
@@ -97,12 +124,15 @@ class NewsLoadWorker(QObject):
     loaded = Signal(list, list)
     failed = Signal(str)
 
-    def __init__(self, database_path: str, days: int = 7, source: str = "全部", limit: int = 500) -> None:
+    def __init__(self, database_path: str, days: int = 7, source: str = "全部", limit: int = 500,
+                 start_date: Any | None = None, end_date: Any | None = None) -> None:
         super().__init__()
         self._database_path = database_path
         self._days = days
         self._source = source
         self._limit = limit
+        self._start_date = start_date
+        self._end_date = end_date
 
     @Slot()
     def run(self) -> None:
@@ -111,7 +141,16 @@ class NewsLoadWorker(QObject):
             db.init_db(engine)
             factory = db.make_session_factory(engine)
             with db.session_scope(factory) as session:
-                rows = db.list_recent_news(session, days=self._days, source=self._source, limit=self._limit)
+                if self._start_date is not None and self._end_date is not None:
+                    rows = db.list_news_by_date_range(
+                        session,
+                        start_date=self._start_date,
+                        end_date=self._end_date,
+                        source=self._source,
+                        limit=self._limit,
+                    )
+                else:
+                    rows = db.list_recent_news(session, days=self._days, source=self._source, limit=self._limit)
                 sources = db.list_news_sources(session)
                 out: list[dict[str, Any]] = []
                 for row in rows:
@@ -179,13 +218,17 @@ class RecentNewsAnalysisWorker(QObject):
                 model=self._settings.deepseek_model,
                 system_prompt=self._settings.custom_system_prompt.strip() or None,
             )
-            parsed = ai.analyze(
-                news_items,
-                keywords=self._settings.industry_keywords,
-                time_range=cast(TimeRange, "3d" if self._days <= 3 else "7d"),
-                extra_instruction=(
-                    "请输出新闻摘要、行业趋势判断、潜在影响分析。"
-                    + (f"\n补充要求：{self._user_extra}" if self._user_extra else "")
+            parsed = _with_heartbeat(
+                self.log_line.emit,
+                "DeepSeek 模型",
+                lambda: ai.analyze(
+                    news_items,
+                    keywords=self._settings.industry_keywords,
+                    time_range=analyzer.days_to_time_range(self._days),
+                    extra_instruction=(
+                        "请输出新闻摘要、行业趋势判断、潜在影响分析。"
+                        + (f"\n补充要求：{self._user_extra}" if self._user_extra else "")
+                    ),
                 ),
             )
             if self._persist:
@@ -218,8 +261,8 @@ class AiAnalysisWorker(QObject):
     def run(self) -> None:
         try:
             self.log_line.emit("开始定向爬取权威网站…")
-            tr = self._time_range if self._time_range in ("24h", "3d", "7d") else "24h"
-            days_map = {"24h": 1, "3d": 3, "7d": 7}
+            tr = self._time_range if self._time_range in ("24h", "3d", "7d", "15d", "30d") else "24h"
+            days_map = {"24h": 1, "3d": 3, "7d": 7, "15d": 15, "30d": 30}
             collector = DataCollector(
                 source_ids=self._settings.crawl_source_ids,
                 max_items_per_source=self._settings.crawl_max_items_per_source,
@@ -238,11 +281,15 @@ class AiAnalysisWorker(QObject):
                 model=self._settings.deepseek_model,
                 system_prompt=self._settings.custom_system_prompt.strip() or None,
             )
-            parsed = ai.analyze(
-                news_items,
-                keywords=self._settings.industry_keywords,
-                time_range=cast(TimeRange, tr),
-                extra_instruction=self._user_extra,
+            parsed = _with_heartbeat(
+                self.log_line.emit,
+                "DeepSeek 模型",
+                lambda: ai.analyze(
+                    news_items,
+                    keywords=self._settings.industry_keywords,
+                    time_range=cast(TimeRange, tr),
+                    extra_instruction=self._user_extra,
+                ),
             )
             self.log_line.emit("模型返回已解析为 JSON。")
 
@@ -468,4 +515,37 @@ class ExportCsvWorker(QObject):
             self.finished_ok.emit(self._target_path)
         except Exception as exc:  # noqa: BLE001
             logger.exception("导出 CSV 失败")
+            self.failed.emit(str(exc))
+
+
+class TestConnectionWorker(QObject):
+    """测试 DeepSeek 连接：发送最小请求并回显模型回复。"""
+
+    finished_ok = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, api_key: str, base_url: str, model: str) -> None:
+        super().__init__()
+        self._api_key = api_key
+        self._base_url = base_url
+        self._model = model
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            client = DeepSeekClient(
+                api_key=self._api_key,
+                base_url=self._base_url,
+                model=self._model,
+                timeout_sec=30,
+            )
+            data = client.chat_completion(
+                [{"role": "user", "content": "请只回复两个字：正常"}],
+                temperature=0.0,
+                response_format_json=False,
+            )
+            content = (client.extract_message_content(data) or "").strip() or "（空回复）"
+            self.finished_ok.emit(content)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("模型连接测试失败")
             self.failed.emit(str(exc))

@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import date
+from typing import Callable
 
 import httpx
 from loguru import logger
 
-from ai_intelligence_system.core.base_crawler import BaseCrawler, CrawlerError, NewsItem
+from ai_intelligence_system.core.base_crawler import (
+    BaseCrawler,
+    CrawlerError,
+    NewsItem,
+    resolve_dates_to_mark,
+)
 from ai_intelligence_system.core.crawl_history import CrawlHistoryStore
 from ai_intelligence_system.core.crawler_factory import create_many, list_registered
 
@@ -31,6 +38,7 @@ class DataCollector:
         skip_empty_sources: bool = True,
         incremental: bool = True,
         history_store: CrawlHistoryStore | None = None,
+        progress_cb: Callable[[str], None] | None = None,
     ) -> None:
         self._source_ids = list(source_ids or self.DEFAULT_SOURCES)
         self._timeout_sec = timeout_sec
@@ -40,6 +48,7 @@ class DataCollector:
         self._skip_empty_sources = skip_empty_sources
         self._incremental = incremental
         self._history = history_store or CrawlHistoryStore()
+        self._progress_cb = progress_cb
         logger.info("DataCollector 初始化: 源={} max_items={} fetch_detail={} detail_concurrency={} incremental={}",
                      self._source_ids, self._max_items_per_source, self._fetch_detail,
                      self._detail_concurrency, self._incremental)
@@ -102,7 +111,11 @@ class DataCollector:
             tasks = [
                 self._run_one(client, crawler, start, end) for crawler in crawlers
             ]
-            batches = await asyncio.gather(*tasks)
+            heartbeat = asyncio.create_task(self._heartbeat(len(crawlers)))
+            try:
+                batches = await asyncio.gather(*tasks)
+            finally:
+                heartbeat.cancel()
             logger.info("[步骤5] 所有爬虫任务完成, 各源返回: {}", 
                          {crawlers[i].source_id: len(batch) for i, batch in enumerate(batches)})
 
@@ -116,6 +129,29 @@ class DataCollector:
         logger.info("=" * 60)
         return deduped
 
+    def _progress(self, msg: str) -> None:
+        """向调用方回调实时进度，回调异常绝不阻断爬取。"""
+        if self._progress_cb is None:
+            return
+        try:
+            self._progress_cb(msg)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("进度回调异常: {}", exc)
+
+    async def _heartbeat(self, source_count: int) -> None:
+        """抓取期间每 5 秒上报一次心跳，避免长网络等待时界面毫无反馈。"""
+        started = time.monotonic()
+        try:
+            while True:
+                await asyncio.sleep(5)
+                elapsed = int(time.monotonic() - started)
+                self._progress(
+                    f"正在并行抓取 {source_count} 个数据源… 已耗时 {elapsed} 秒"
+                    f"（单请求超时 {int(self._timeout_sec)} 秒）"
+                )
+        except asyncio.CancelledError:
+            pass
+
     async def _run_one(
         self,
         client: httpx.AsyncClient,
@@ -125,6 +161,7 @@ class DataCollector:
     ) -> list[NewsItem]:
         sid = crawler.source_id
         logger.info("--- [{}] 开始爬取 ---", sid)
+        self._progress(f"[{sid}] 开始抓取…")
         try:
             if self._incremental and not hasattr(crawler, "_force_range"):
                 logger.info("[{}] 增量模式: 查询待抓取日期 {} ~ {}", sid, start, end)
@@ -132,6 +169,7 @@ class DataCollector:
                 logger.info("[{}] 待抓取日期: {} 天 = {}", sid, len(pending), pending)
                 if not pending:
                     logger.info("[{}] 无新增日期可抓, 跳过", sid)
+                    self._progress(f"[{sid}] 无新增日期，跳过")
                     return []
                 run_start, run_end = pending[0], pending[-1]
                 logger.info("[{}] 实际抓取范围: {} ~ {}", sid, run_start, run_end)
@@ -141,12 +179,17 @@ class DataCollector:
                 logger.info("[{}] 非增量模式: 直接抓取 {} ~ {}", sid, run_start, run_end)
 
             logger.info("[{}] 调用 fetch_by_date: {} ~ {}", sid, run_start, run_end)
+            self._progress(f"[{sid}] 正在请求 {run_start} ~ {run_end} 的新闻列表…")
             items = await crawler.fetch_by_date(client, run_start, run_end)
             logger.info("[{}] fetch_by_date 返回 {} 条新闻", sid, len(items))
+            self._progress(f"[{sid}] 列表完成，返回 {len(items)} 条新闻")
 
             if self._incremental:
-                dates_to_mark = pending if pending else self._history.pending_dates(
+                fallback_pending = pending if pending else self._history.pending_dates(
                     sid, start, end, incremental=False
+                )
+                dates_to_mark = resolve_dates_to_mark(
+                    sid, items, fallback_pending, run_start, run_end
                 )
                 if dates_to_mark:
                     logger.info("[{}] 标记 {} 个日期为已完成: {}", sid, len(dates_to_mark), dates_to_mark)
