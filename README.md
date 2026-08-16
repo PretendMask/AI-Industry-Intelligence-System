@@ -1,23 +1,29 @@
 # 行业情报系统（桌面版）
 
-基于 **Python 3.10+**、**PySide6**、**SQLite** 与 **DeepSeek API** 的个人行业情报桌面应用：定时采集、手动/定时分析、本地存储、邮件推送（SMTP）。
+基于 **Python 3.12+**、**PySide6**、**SQLite** 与 **DeepSeek API** 的个人行业情报桌面应用：定时采集、手动/定时分析、本地存储、邮件推送（SMTP）。
 ## 下载安装
 
 **Windows 一键安装程序（推荐）**
 
-[![Download v2.1](https://img.shields.io/badge/Download-v2.2-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/PretendMask/AI-Industry-Intelligence-System/releases/download/v2.2.0/Industry-Intelligence-Setup-v2.2.exe)
+[![Download v2.1](https://img.shields.io/badge/Download-v2.3-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/PretendMask/AI-Industry-Intelligence-System/releases/download/v2.3.0/Industry-Intelligence-Setup-v2.3.exe)
 
-> 文件大小 ≈ 43 MB｜支持 Windows 10/11
+> 文件大小 ≈ 59 MB｜支持 Windows 10/11
 ## 📸 界面预览
 
 ### 仪表盘
-![仪表盘](screenshots/1-analyze.png)
+![仪表盘](screenshots/1-dashboard.png)
 
-### 统计分析
-![统计分析](screenshots/1-statistics.png)
+### 拓扑分析
+![拓扑分析](screenshots/1-analyze.png)
+
+### 多边分析
+![多边分析](screenshots/1-statistics.png)
 
 ### 设置页面
 ![分类统计](screenshots/1-settings.png)
+
+### 日志页面
+![日志审计](screenshots/1-log.png)
 
 ### 定时邮件通知
 ![邮件通知](screenshots/1-email.png)
